@@ -180,6 +180,9 @@ class Game:
         self.stats_food_legend = 0
         self.stats_player_body = 0
         self.stats_player_head = 0
+        self.player_alive = True
+        self.player_max_length = 0
+        self.player_survive_cycles = 0
 
     def reset(self):
         self.cycle = 0
@@ -197,6 +200,9 @@ class Game:
         self.stats_food_legend = 0
         self.stats_player_body = 0
         self.stats_player_head = 0
+        self.player_alive = True
+        self.player_max_length = 0
+        self.player_survive_cycles = 0
 
     def add_egg(self, x, y, is_player=False):
         for egg in self.eggs:
@@ -263,6 +269,11 @@ class Game:
         eaten_positions = set()
         food_positions = [(egg.x, egg.y) for egg in self.eggs if egg.is_food]
         egg_positions = [(egg.x, egg.y) for egg in self.eggs if not egg.is_food]
+        player_snake = None
+        for snake in self.snakes:
+            if isinstance(snake, PlayerSnake):
+                player_snake = snake
+                break
         for snake in self.snakes:
             if len(snake.body) >= 3:
                 snake.turn_interval = self.turn_interval
@@ -288,11 +299,18 @@ class Game:
                 else:
                     head_positions[pos] = [idx]
         eaten_snakes = set()
+        player_eaten = False
         for pos, idxs in head_positions.items():
             if len(idxs) > 1:
                 eater = random.choice(idxs)
                 for idx in idxs:
                     if idx != eater and self.snakes[idx].body:
+                        # Check if player snake is eaten
+                        if isinstance(self.snakes[idx], PlayerSnake):
+                            player_eaten = True
+                            self.player_alive = False
+                            self.player_survive_cycles = self.cycle - self.snakes[idx].born_cycle
+                            self.player_max_length = max(self.player_max_length, len(self.snakes[idx].body))
                         self.snakes[eater].grow_by(len(self.snakes[idx].body))
                         self.snakes[eater].ate = True
                         self.snakes[idx].body = []
@@ -320,6 +338,12 @@ class Game:
                     continue
                 if snake.head() in other.body:
                     eaten_length = len(other.body)
+                    # Check if player snake is eaten
+                    if isinstance(other, PlayerSnake):
+                        player_eaten = True
+                        self.player_alive = False
+                        self.player_survive_cycles = self.cycle - other.born_cycle
+                        self.player_max_length = max(self.player_max_length, len(other.body))
                     snake.grow_by(eaten_length)
                     snake.ate = True
                     other.body = []
@@ -334,7 +358,6 @@ class Game:
         for snake in self.snakes:
             if not snake.body:
                 continue
-            # Only non-player snakes can lay eggs
             if not isinstance(snake, PlayerSnake):
                 if len(snake.body) > 3 and self.cycle - snake.last_lay >= self.lay_interval:
                     tail = snake.body[-1]
@@ -368,13 +391,18 @@ class Game:
         self.stats_snakes = len(self.snakes)
         self.stats_eggs = len([egg for egg in self.eggs if not egg.is_food])
         self.stats_food = len([egg for egg in self.eggs if egg.is_food])
-        # Count grid stats for legend (fix: count after grid is updated)
         self.stats_head = int(np.count_nonzero(self.grid == 3)) + int(np.count_nonzero(self.grid == 6))
         self.stats_body = int(np.count_nonzero(self.grid == 1)) + int(np.count_nonzero(self.grid == 5))
         self.stats_egg = int(np.count_nonzero(self.grid == 2))
         self.stats_food_legend = int(np.count_nonzero(self.grid == 4))
         self.stats_player_body = int(np.count_nonzero(self.grid == 5))
         self.stats_player_head = int(np.count_nonzero(self.grid == 6))
+        # Track player snake stats
+        if player_snake and len(player_snake.body) > self.player_max_length:
+            self.player_max_length = len(player_snake.body)
+        if player_snake and self.player_alive:
+            self.player_survive_cycles = self.cycle - player_snake.born_cycle
+        self.player_eaten = player_eaten
 
 class GameWidget(QWidget):
     def __init__(self, game):
@@ -691,6 +719,16 @@ class MainWindow(QMainWindow):
         )
         QMessageBox.information(self, "Extinction - Game Over", stats_text)
 
+    def show_player_game_over(self):
+        duration = self.format_time(self.game.player_survive_cycles, self.spin_speed.value())
+        stats_text = (
+            f"Player Snake Eaten!\n\n"
+            f"Survived: {self.game.player_survive_cycles} cycles\n"
+            f"Duration: {duration}\n"
+            f"Longest length: {self.game.player_max_length}\n"
+        )
+        QMessageBox.information(self, "Game Over - Player Eaten", stats_text)
+
     def next_step(self):
         self.game.player_direction = self.player_direction
         self.game.update()
@@ -702,7 +740,15 @@ class MainWindow(QMainWindow):
         self._update_legend_labels()
         self.widget.update()
         eggs_pending = any(not egg.is_food for egg in self.game.eggs)
-        if self.game.stats_snakes == 0 and not eggs_pending:
+        # Show game over if player is eaten
+        if hasattr(self.game, "player_eaten") and self.game.player_eaten:
+            if self.running:
+                self.timer.stop()
+                self.running = False
+            self.show_player_game_over()
+            self.game.player_eaten = False
+        # Show game over if all snakes extinct
+        elif self.game.stats_snakes == 0 and not eggs_pending:
             if self.running:
                 self.timer.stop()
                 self.running = False
