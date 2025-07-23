@@ -1,4 +1,5 @@
 import sys
+import os
 import numpy as np
 import random
 from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QHBoxLayout, QLabel, QSpinBox, QDialog, QFormLayout, QSpacerItem, QSizePolicy, QMessageBox
@@ -6,6 +7,7 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPainter, QColor, QPen, QIcon
 
 GRID_SIZE = 80
+GAME_AREA_SIZE = 400  # px, area game tetap
 
 class Egg:
     def __init__(self, x, y, hatch_cycle, is_food=False):
@@ -167,7 +169,7 @@ class Game:
         self.tangled_die_cycles = 30
         self.food_attract_radius = 5
         self.egg_attract_radius = 5
-        self.cell_size = 5
+        self.cell_size = GAME_AREA_SIZE // GRID_SIZE
         self.shading_interval = 300
         self.max_snake_length = 0
         self.total_eggs = 0
@@ -338,12 +340,13 @@ class GameWidget(QWidget):
     def __init__(self, game):
         super().__init__()
         self.game = game
-        self.setMinimumSize(GRID_SIZE * self.game.cell_size, GRID_SIZE * self.game.cell_size)
+        self.setFixedSize(GAME_AREA_SIZE, GAME_AREA_SIZE)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        cell_size = self.game.cell_size
+        cell_size = GAME_AREA_SIZE // GRID_SIZE
+        self.game.cell_size = cell_size
         for x in range(GRID_SIZE):
             for y in range(GRID_SIZE):
                 val = self.game.grid[x, y]
@@ -358,10 +361,10 @@ class GameWidget(QWidget):
         pen = QPen(QColor(200, 200, 200))
         pen.setWidth(2)
         painter.setPen(pen)
-        painter.drawRect(0, 0, GRID_SIZE * cell_size - 1, GRID_SIZE * cell_size - 1)
+        painter.drawRect(0, 0, GAME_AREA_SIZE - 1, GAME_AREA_SIZE - 1)
 
     def mousePressEvent(self, event):
-        cell_size = self.game.cell_size
+        cell_size = GAME_AREA_SIZE // GRID_SIZE
         x = int(event.position().x() // cell_size)
         y = int(event.position().y() // cell_size)
         if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
@@ -410,9 +413,9 @@ class SettingsDialog(QDialog):
         self.spin_speed.setRange(10, 2000)
         self.spin_speed.setValue(parent.spin_speed.value())
         self.spin_speed.setSuffix(" ms")
-        self.spin_cell_size = QSpinBox()
-        self.spin_cell_size.setRange(2, 40)
-        self.spin_cell_size.setValue(game.cell_size)
+        self.spin_grid_size = QSpinBox()
+        self.spin_grid_size.setRange(10, 200)
+        self.spin_grid_size.setValue(GRID_SIZE)
         self.spin_shading = QSpinBox()
         self.spin_shading.setRange(1, 9999)
         self.spin_shading.setValue(game.shading_interval)
@@ -424,7 +427,7 @@ class SettingsDialog(QDialog):
         self.layout.addRow("Food attract radius", self.spin_food_radius)
         self.layout.addRow("Egg attract radius", self.spin_egg_radius)
         self.layout.addRow("Cycle speed", self.spin_speed)
-        self.layout.addRow("Cell size", self.spin_cell_size)
+        self.layout.addRow("Grid size", self.spin_grid_size)
         self.layout.addRow("Snake shading interval", self.spin_shading)
         btn_ok = QPushButton("OK")
         btn_ok.clicked.connect(self.accept)
@@ -438,8 +441,11 @@ class SettingsDialog(QDialog):
         self.game.tangled_die_cycles = self.spin_tangled.value()
         self.game.food_attract_radius = self.spin_food_radius.value()
         self.game.egg_attract_radius = self.spin_egg_radius.value()
-        self.game.cell_size = self.spin_cell_size.value()
+        global GRID_SIZE
+        GRID_SIZE = self.spin_grid_size.value()
+        self.game.cell_size = GAME_AREA_SIZE // GRID_SIZE
         self.game.shading_interval = self.spin_shading.value()
+        self.game.grid = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.uint8)
 
 class GuideDialog(QDialog):
     def __init__(self, parent=None):
@@ -450,14 +456,15 @@ class GuideDialog(QDialog):
             "Game of Snakes - Mechanics & Tips\n\n"
             "1. Click on the grid to place an egg (yellow).\n"
             "2. Click again on an egg to turn it into food (grey). Snakes can eat food to grow.\n"
-            "3. Eggs hatch into snakes of length 3 after 'Egg hatch cycles'.\n"
-            "4. Snakes of length 3 cannot lay eggs. Only longer snakes can lay eggs every 'Egg lay interval'.\n"
-            "5. If all snakes die and only eggs/food remain, the game ends.\n"
-            "6. Hungry snakes must eat within 'Hungry dies after cycles' or they die.\n"
-            "7. Snakes change direction every 'Snake turn interval' cycles.\n"
-            "8. If a snake's head does not move for more than 'Tangled dies after cycles', it dies.\n"
-            "9. Snakes bounce off walls and can eat eggs, food, or other snakes to grow.\n"
-            "10. Tips: Place eggs strategically, avoid tangling, and keep snakes fed to survive!"
+            "3. Right-click on the grid to add food directly (grey).\n"
+            "4. Eggs hatch into snakes of length 3 after 'Egg hatch cycles'.\n"
+            "5. Snakes of length 3 cannot lay eggs. Only longer snakes can lay eggs every 'Egg lay interval'.\n"
+            "6. If all snakes die and only eggs/food remain, the game ends.\n"
+            "7. Hungry snakes must eat within 'Hungry dies after cycles' or they die.\n"
+            "8. Snakes change direction every 'Snake turn interval' cycles.\n"
+            "9. If a snake's head does not move for more than 'Tangled dies after cycles', it dies.\n"
+            "10. Snakes bounce off walls and can eat eggs, food, or other snakes to grow.\n"
+            "11. Tips: Place eggs strategically, avoid tangling, and keep snakes fed to survive!"
         )
         label = QLabel(guide_text)
         label.setWordWrap(True)
@@ -530,7 +537,7 @@ class MainWindow(QMainWindow):
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
-        self.setFixedSize(GRID_SIZE * self.game.cell_size + 20, GRID_SIZE * self.game.cell_size + 220)
+        self.setFixedSize(GAME_AREA_SIZE + 20, GAME_AREA_SIZE + 220)
 
     def show_settings(self):
         dialog = SettingsDialog(self, self.game)
@@ -538,8 +545,8 @@ class MainWindow(QMainWindow):
             dialog.apply_settings()
             self.spin_speed.setValue(dialog.spin_speed.value())
             self.update_speed()
-            self.widget.setMinimumSize(GRID_SIZE * self.game.cell_size, GRID_SIZE * self.game.cell_size)
-            self.setFixedSize(GRID_SIZE * self.game.cell_size + 20, GRID_SIZE * self.game.cell_size + 220)
+            self.widget.setFixedSize(GAME_AREA_SIZE, GAME_AREA_SIZE)
+            self.setFixedSize(GAME_AREA_SIZE + 20, GAME_AREA_SIZE + 220)
             self.widget.update()
 
     def show_guide(self):
@@ -611,7 +618,8 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GameOfSnakes.App")
-    app.setWindowIcon(QIcon("Game of Snakes.ico"))
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "Game of Snakes.ico")
+    app.setWindowIcon(QIcon(icon_path))
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
