@@ -2,19 +2,21 @@ import sys
 import os
 import numpy as np
 import random
-from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QHBoxLayout, QLabel, QSpinBox, QDialog, QFormLayout, QSpacerItem, QSizePolicy, QMessageBox
+from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget, QHBoxLayout, QGridLayout, QLabel, QSpinBox, QDialog, QFormLayout, QSpacerItem, QSizePolicy, QMessageBox
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QPainter, QColor, QPen, QIcon
+from player_snake import PlayerSnake
 
 GRID_SIZE = 80
 GAME_AREA_SIZE = 400  # px, area game tetap
 
 class Egg:
-    def __init__(self, x, y, hatch_cycle, is_food=False):
+    def __init__(self, x, y, hatch_cycle, is_food=False, is_player=False):
         self.x = x
         self.y = y
         self.hatch_cycle = hatch_cycle
         self.is_food = is_food
+        self.is_player = is_player
 
 class Snake:
     def __init__(self, body, direction, born_cycle, hungry=False, turn_interval=30, tangled_die_cycles=30, food_attract_radius=5, egg_attract_radius=5, shading_interval=300):
@@ -94,7 +96,6 @@ class Snake:
                         moved = True
                         break
                 if not moved:
-                    # Langsung mantul dan bergerak jika mentok dinding
                     self.bounce()
                     dx, dy = self.direction
                     new_head = (head_x + dx, head_y + dy)
@@ -109,7 +110,6 @@ class Snake:
                     self.body = [new_head] + self.body[:-1]
                     moved = True
                 else:
-                    # Langsung mantul dan bergerak jika mentok dinding
                     self.bounce()
                     dx, dy = self.direction
                     new_head = (head_x + dx, head_y + dy)
@@ -174,6 +174,12 @@ class Game:
         self.max_snake_length = 0
         self.total_eggs = 0
         self.total_food = 0
+        self.stats_head = 0
+        self.stats_body = 0
+        self.stats_egg = 0
+        self.stats_food_legend = 0
+        self.stats_player_body = 0
+        self.stats_player_head = 0
 
     def reset(self):
         self.cycle = 0
@@ -185,15 +191,21 @@ class Game:
         self.max_snake_length = 0
         self.total_eggs = 0
         self.total_food = 0
+        self.stats_head = 0
+        self.stats_body = 0
+        self.stats_egg = 0
+        self.stats_food_legend = 0
+        self.stats_player_body = 0
+        self.stats_player_head = 0
 
-    def add_egg(self, x, y):
+    def add_egg(self, x, y, is_player=False):
         for egg in self.eggs:
             if egg.x == x and egg.y == y:
                 if not egg.is_food:
                     egg.is_food = True
                 return
-        self.eggs.append(Egg(x, y, self.cycle + self.hatch_cycles))
-        self.grid[x, y] = 2
+        self.eggs.append(Egg(x, y, self.cycle + self.hatch_cycles, is_player=is_player))
+        self.grid[x, y] = 2 if not is_player else 5
         self.total_eggs += 1
 
     def add_food(self, x, y):
@@ -205,10 +217,14 @@ class Game:
         self.grid[x, y] = 4
         self.total_food += 1
 
-    def add_snake(self, body, direction, hungry=False):
+    def add_snake(self, body, direction, hungry=False, is_player=False):
         valid_body = [(x, y) for x, y in body if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE]
         if len(valid_body) >= 3:
-            self.snakes.append(Snake(valid_body, direction, self.cycle, hungry=hungry, turn_interval=self.turn_interval, tangled_die_cycles=self.tangled_die_cycles, food_attract_radius=self.food_attract_radius, egg_attract_radius=self.egg_attract_radius, shading_interval=self.shading_interval))
+            if is_player:
+                snake = PlayerSnake(valid_body, direction, self.cycle, hungry=hungry, turn_interval=self.turn_interval, tangled_die_cycles=self.tangled_die_cycles, food_attract_radius=self.food_attract_radius, egg_attract_radius=self.egg_attract_radius, shading_interval=self.shading_interval)
+            else:
+                snake = Snake(valid_body, direction, self.cycle, hungry=hungry, turn_interval=self.turn_interval, tangled_die_cycles=self.tangled_die_cycles, food_attract_radius=self.food_attract_radius, egg_attract_radius=self.egg_attract_radius, shading_interval=self.shading_interval)
+            self.snakes.append(snake)
             for x, y in valid_body:
                 self.grid[x, y] = 1
             if len(valid_body) > self.max_snake_length:
@@ -231,7 +247,10 @@ class Game:
                     if 0 <= nx < GRID_SIZE and 0 <= ny < GRID_SIZE:
                         body.append((nx, ny))
                 if len(body) == 3:
-                    new_snake = Snake(body, dir, self.cycle, hungry=True, turn_interval=self.turn_interval, tangled_die_cycles=self.tangled_die_cycles, food_attract_radius=self.food_attract_radius, egg_attract_radius=self.egg_attract_radius, shading_interval=self.shading_interval)
+                    if egg.is_player:
+                        new_snake = PlayerSnake(body, dir, self.cycle, hungry=True, turn_interval=self.turn_interval, tangled_die_cycles=self.tangled_die_cycles, food_attract_radius=self.food_attract_radius, egg_attract_radius=self.egg_attract_radius, shading_interval=self.shading_interval)
+                    else:
+                        new_snake = Snake(body, dir, self.cycle, hungry=True, turn_interval=self.turn_interval, tangled_die_cycles=self.tangled_die_cycles, food_attract_radius=self.food_attract_radius, egg_attract_radius=self.egg_attract_radius, shading_interval=self.shading_interval)
                     new_snakes.append(new_snake)
                     if len(body) > self.max_snake_length:
                         self.max_snake_length = len(body)
@@ -252,7 +271,10 @@ class Game:
                 snake.egg_attract_radius = self.egg_attract_radius
                 snake.shading_interval = self.shading_interval
                 snake.bounce()
-                snake.move(food_positions, egg_positions)
+                if isinstance(snake, PlayerSnake):
+                    snake.move(food_positions, egg_positions, self.player_direction)
+                else:
+                    snake.move(food_positions, egg_positions)
                 snake.shade_skin(self.cycle, eggs_to_add)
                 if len(snake.body) > self.max_snake_length:
                     self.max_snake_length = len(snake.body)
@@ -304,6 +326,7 @@ class Game:
                     snakes_to_remove.add(j)
         self.snakes = [snake for idx, snake in enumerate(self.snakes) if len(snake.body) >= 3 and idx not in snakes_to_remove and snake.tangled_cycles <= snake.tangled_die_cycles]
         self.snakes = [snake for snake in self.snakes if not (snake.hungry and not snake.ate and self.cycle - snake.born_cycle > self.hungry_die_cycles)]
+        self.snakes = [snake for snake in self.snakes if not (isinstance(snake, PlayerSnake) and snake.hungry and not snake.ate and self.cycle - snake.born_cycle > self.hungry_die_cycles)]
         for snake in self.snakes:
             if snake.hungry and snake.ate:
                 snake.hungry = False
@@ -311,30 +334,47 @@ class Game:
         for snake in self.snakes:
             if not snake.body:
                 continue
-            if len(snake.body) > 3 and self.cycle - snake.last_lay >= self.lay_interval:
-                tail = snake.body[-1]
-                if 0 <= tail[0] < GRID_SIZE and 0 <= tail[1] < GRID_SIZE:
-                    eggs_to_add.append(Egg(tail[0], tail[1], self.cycle + self.hatch_cycles))
-                    self.total_eggs += 1
-                snake.last_lay = self.cycle
+            # Only non-player snakes can lay eggs
+            if not isinstance(snake, PlayerSnake):
+                if len(snake.body) > 3 and self.cycle - snake.last_lay >= self.lay_interval:
+                    tail = snake.body[-1]
+                    if 0 <= tail[0] < GRID_SIZE and 0 <= tail[1] < GRID_SIZE:
+                        eggs_to_add.append(Egg(tail[0], tail[1], self.cycle + self.hatch_cycles, is_player=False))
+                        self.total_eggs += 1
+                    snake.last_lay = self.cycle
         self.eggs = [egg for egg in self.eggs if (egg.x, egg.y) not in eaten_positions]
         self.eggs += eggs_to_add
         for egg in self.eggs:
             if 0 <= egg.x < GRID_SIZE and 0 <= egg.y < GRID_SIZE:
                 if egg.is_food:
                     self.grid[egg.x, egg.y] = 4
+                elif egg.is_player:
+                    self.grid[egg.x, egg.y] = 5
                 else:
                     self.grid[egg.x, egg.y] = 2
         for snake in self.snakes:
             for idx, (x, y) in enumerate(snake.body):
                 if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
-                    if idx == 0:
-                        self.grid[x, y] = 3
+                    if isinstance(snake, PlayerSnake):
+                        if idx == 0:
+                            self.grid[x, y] = 6  # kepala oranye
+                        else:
+                            self.grid[x, y] = 5  # badan biru
                     else:
-                        self.grid[x, y] = 1
+                        if idx == 0:
+                            self.grid[x, y] = 3
+                        else:
+                            self.grid[x, y] = 1
         self.stats_snakes = len(self.snakes)
         self.stats_eggs = len([egg for egg in self.eggs if not egg.is_food])
         self.stats_food = len([egg for egg in self.eggs if egg.is_food])
+        # Count grid stats for legend (fix: count after grid is updated)
+        self.stats_head = int(np.count_nonzero(self.grid == 3)) + int(np.count_nonzero(self.grid == 6))
+        self.stats_body = int(np.count_nonzero(self.grid == 1)) + int(np.count_nonzero(self.grid == 5))
+        self.stats_egg = int(np.count_nonzero(self.grid == 2))
+        self.stats_food_legend = int(np.count_nonzero(self.grid == 4))
+        self.stats_player_body = int(np.count_nonzero(self.grid == 5))
+        self.stats_player_head = int(np.count_nonzero(self.grid == 6))
 
 class GameWidget(QWidget):
     def __init__(self, game):
@@ -358,6 +398,10 @@ class GameWidget(QWidget):
                     painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, QColor(255,0,0))
                 elif val == 4:
                     painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, QColor(128,128,128))
+                elif val == 5:
+                    painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, QColor(0,0,255))
+                elif val == 6:
+                    painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, QColor(255,128,0))
         pen = QPen(QColor(200, 200, 200))
         pen.setWidth(2)
         painter.setPen(pen)
@@ -457,14 +501,15 @@ class GuideDialog(QDialog):
             "1. Click on the grid to place an egg (yellow).\n"
             "2. Click again on an egg to turn it into food (grey). Snakes can eat food to grow.\n"
             "3. Right-click on the grid to add food directly (grey).\n"
-            "4. Eggs hatch into snakes of length 3 after 'Egg hatch cycles'.\n"
-            "5. Snakes of length 3 cannot lay eggs. Only longer snakes can lay eggs every 'Egg lay interval'.\n"
-            "6. If all snakes die and only eggs/food remain, the game ends.\n"
-            "7. Hungry snakes must eat within 'Hungry dies after cycles' or they die.\n"
-            "8. Snakes change direction every 'Snake turn interval' cycles.\n"
-            "9. If a snake's head does not move for more than 'Tangled dies after cycles', it dies.\n"
-            "10. Snakes bounce off walls and can eat eggs, food, or other snakes to grow.\n"
-            "11. Tips: Place eggs strategically, avoid tangling, and keep snakes fed to survive!"
+            "4. Click 'Player' to spawn a player egg (blue) at a random location. Player snake can be controlled with ASWD keys. Only one player snake allowed.\n"
+            "5. Eggs hatch into snakes of length 3 after 'Egg hatch cycles'.\n"
+            "6. Snakes of length 3 cannot lay eggs. Only longer snakes can lay eggs every 'Egg lay interval'.\n"
+            "7. If all snakes die and only eggs/food remain, the game ends.\n"
+            "8. Hungry snakes must eat within 'Hungry dies after cycles' or they die. This also applies to player snake.\n"
+            "9. Snakes change direction every 'Snake turn interval' cycles.\n"
+            "10. If a snake's head does not move for more than 'Tangled dies after cycles', it dies.\n"
+            "11. Snakes bounce off walls and can eat eggs, food, or other snakes to grow.\n"
+            "12. Tips: Place eggs strategically, avoid tangling, and keep snakes fed to survive!"
         )
         label = QLabel(guide_text)
         label.setWordWrap(True)
@@ -482,6 +527,7 @@ class MainWindow(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.next_step)
         self.running = False
+        self.player_direction = None
 
         self.label_cycle = QLabel("Cycle: 0")
         self.label_time = QLabel("Time: 00:00:00")
@@ -503,18 +549,31 @@ class MainWindow(QMainWindow):
         btn_settings.clicked.connect(self.show_settings)
         btn_guide = QPushButton("Guide")
         btn_guide.clicked.connect(self.show_guide)
+        btn_player = QPushButton("Player")
+        btn_player.clicked.connect(self.spawn_player_egg)
 
         top_layout = QHBoxLayout()
         top_layout.addWidget(btn_start)
         top_layout.addWidget(btn_clear)
         top_layout.addWidget(btn_settings)
         top_layout.addWidget(btn_guide)
+        top_layout.addWidget(btn_player)
         stats_layout = QHBoxLayout()
         stats_layout.addWidget(self.label_cycle)
         stats_layout.addWidget(self.label_time)
         stats_layout.addWidget(self.label_snakes)
         stats_layout.addWidget(self.label_eggs)
         stats_layout.addWidget(self.label_food)
+
+        legend_grid = QGridLayout()
+        legend_grid.setSpacing(1)
+        legend_grid.setContentsMargins(0,0,0,0)
+        legend_grid.addWidget(self._legend_label("#FF0000", f"Head ({self.game.stats_head})"), 0, 0)
+        legend_grid.addWidget(self._legend_label("#33CC33", f"Body ({self.game.stats_body})"), 0, 1)
+        legend_grid.addWidget(self._legend_label("#FFFF00", f"Egg ({self.game.stats_egg})"), 0, 2)
+        legend_grid.addWidget(self._legend_label("#808080", f"Food ({self.game.stats_food_legend})"), 1, 0)
+        legend_grid.addWidget(self._legend_label("#0000FF", f"Player Body ({self.game.stats_player_body})"), 1, 1)
+        legend_grid.addWidget(self._legend_label("#FF8000", f"Player Head ({self.game.stats_player_head})"), 1, 2)
 
         explanation = (
             "Game of Snakes is a simulation of snake evolution on a grid. "
@@ -528,6 +587,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addLayout(top_layout)
         layout.addLayout(stats_layout)
+        layout.addLayout(legend_grid)
         center_layout = QHBoxLayout()
         center_layout.addSpacerItem(QSpacerItem(0, 0, QSizePolicy.Expanding, QSizePolicy.Minimum))
         center_layout.addWidget(self.widget)
@@ -537,7 +597,50 @@ class MainWindow(QMainWindow):
         container = QWidget()
         container.setLayout(layout)
         self.setCentralWidget(container)
-        self.setFixedSize(GAME_AREA_SIZE + 20, GAME_AREA_SIZE + 220)
+        self.setFixedSize(GAME_AREA_SIZE + 20, GAME_AREA_SIZE + 200)
+
+    def _legend_label(self, color, text):
+        color_box = QLabel()
+        color_box.setFixedSize(8, 8)
+        color_box.setStyleSheet(f"background-color: {color}; border: 1px solid #333;")
+        lbl = QLabel(text)
+        lbl.setStyleSheet("font-size: 9px; margin-left: 2px;")
+        layout = QHBoxLayout()
+        layout.setSpacing(2)
+        layout.setContentsMargins(0,0,0,0)
+        layout.addWidget(color_box)
+        layout.addWidget(lbl)
+        w = QWidget()
+        w.setLayout(layout)
+        w._legend_lbl = lbl
+        return w
+
+    def spawn_player_egg(self):
+        for snake in self.game.snakes:
+            if isinstance(snake, PlayerSnake):
+                return
+        for egg in self.game.eggs:
+            if egg.is_player:
+                return
+        while True:
+            x = random.randint(0, GRID_SIZE-1)
+            y = random.randint(0, GRID_SIZE-1)
+            if self.game.grid[x, y] == 0:
+                break
+        self.game.add_egg(x, y, is_player=True)
+        self.widget.update()
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        # Support WASD and Arrow keys for player movement
+        if key == Qt.Key_W or key == Qt.Key_Up:
+            self.player_direction = (0, -1)
+        elif key == Qt.Key_S or key == Qt.Key_Down:
+            self.player_direction = (0, 1)
+        elif key == Qt.Key_A or key == Qt.Key_Left:
+            self.player_direction = (-1, 0)
+        elif key == Qt.Key_D or key == Qt.Key_Right:
+            self.player_direction = (1, 0)
 
     def show_settings(self):
         dialog = SettingsDialog(self, self.game)
@@ -546,7 +649,7 @@ class MainWindow(QMainWindow):
             self.spin_speed.setValue(dialog.spin_speed.value())
             self.update_speed()
             self.widget.setFixedSize(GAME_AREA_SIZE, GAME_AREA_SIZE)
-            self.setFixedSize(GAME_AREA_SIZE + 20, GAME_AREA_SIZE + 220)
+            self.setFixedSize(GAME_AREA_SIZE + 20, GAME_AREA_SIZE + 200)
             self.widget.update()
 
     def show_guide(self):
@@ -589,12 +692,14 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Extinction - Game Over", stats_text)
 
     def next_step(self):
+        self.game.player_direction = self.player_direction
         self.game.update()
         self.label_cycle.setText(f"Cycle: {self.game.cycle}")
         self.label_time.setText(f"Time: {self.format_time(self.game.cycle, self.spin_speed.value())}")
         self.label_snakes.setText(f"Snakes: {self.game.stats_snakes}")
         self.label_eggs.setText(f"Eggs: {self.game.stats_eggs}")
         self.label_food.setText(f"Food: {self.game.stats_food}")
+        self._update_legend_labels()
         self.widget.update()
         eggs_pending = any(not egg.is_food for egg in self.game.eggs)
         if self.game.stats_snakes == 0 and not eggs_pending:
@@ -610,11 +715,24 @@ class MainWindow(QMainWindow):
         self.label_snakes.setText("Snakes: 0")
         self.label_eggs.setText("Eggs: 0")
         self.label_food.setText("Food: 0")
+        self._update_legend_labels()
         self.widget.update()
+
+    def _update_legend_labels(self):
+        legend_widgets = [
+            (self.game.stats_head, 0, 0, "Head"),
+            (self.game.stats_body, 0, 1, "Body"),
+            (self.game.stats_egg, 0, 2, "Egg"),
+            (self.game.stats_food_legend, 1, 0, "Food"),
+            (self.game.stats_player_body, 1, 1, "Player Body"),
+            (self.game.stats_player_head, 1, 2, "Player Head"),
+        ]
+        for count, row, col, label in legend_widgets:
+            widget = self.centralWidget().layout().itemAt(2).layout().itemAtPosition(row, col).widget()
+            widget._legend_lbl.setText(f"{label} ({count})")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    # Set AppUserModelID and icon for Windows taskbar
     if sys.platform == "win32":
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("GameOfSnakes.App")
