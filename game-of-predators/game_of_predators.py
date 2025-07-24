@@ -15,6 +15,7 @@ DEFAULT_TURN_INTERVAL = 10
 DEFAULT_FOOD_ATTRACT_RADIUS = 20
 DEFAULT_LAY_EGG_INTERVAL = 50
 DEFAULT_MATURITY_CYCLES = 300
+DEFAULT_RARITY = 0.5
 
 COLOR_NEUTRAL = QColor(128, 128, 128)
 COLOR_WEAPON = QColor(255, 0, 0)
@@ -37,7 +38,7 @@ class Egg:
         self.hatched = False
 
 class Creature:
-    def __init__(self, x, y, hunger_cycles, turn_interval, food_attract_radius, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES):
+    def __init__(self, x, y, hunger_cycles, turn_interval, food_attract_radius, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES, rarity=DEFAULT_RARITY, game=None):
         self.neutral = (x, y)
         self.direction_idx = random.randint(0, 7)
         self.direction = DIRECTIONS[self.direction_idx]
@@ -59,6 +60,8 @@ class Creature:
         self.is_old = False
         self.old_since = None
         self.last_feature_loss_age = None
+        self.rarity = rarity
+        self.game = game
 
     def rotate(self):
         self.direction_idx = random.randint(0, 7)
@@ -198,7 +201,15 @@ class Creature:
     def eat_and_grow(self):
         self.hunger = self.hunger_cycles
         if self.feature_count() < 3:
-            self.grow('random')
+            rarity_factor = self.rarity
+            if self.game:
+                total_cells = self.game.grid_size * self.game.grid_size
+                food_count = len(self.game.food)
+                egg_count = len([egg for egg in self.game.eggs if not egg.hatched])
+                abundance = (food_count + egg_count) / max(1, total_cells)
+                rarity_factor = min(1.0, max(0.0, self.rarity + abundance * 0.8 - 0.2))
+            if random.random() > rarity_factor:
+                self.grow('random')
 
     def grow(self, part):
         if self.feature_count() >= 3:
@@ -243,7 +254,7 @@ class Creature:
         return result
 
 class Game:
-    def __init__(self, grid_size=DEFAULT_GRID_SIZE, incubate_cycles=DEFAULT_INCU_CYCLES, hunger_cycles=DEFAULT_HUNGER_CYCLES, turn_interval=DEFAULT_TURN_INTERVAL, food_attract_radius=DEFAULT_FOOD_ATTRACT_RADIUS, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES):
+    def __init__(self, grid_size=DEFAULT_GRID_SIZE, incubate_cycles=DEFAULT_INCU_CYCLES, hunger_cycles=DEFAULT_HUNGER_CYCLES, turn_interval=DEFAULT_TURN_INTERVAL, food_attract_radius=DEFAULT_FOOD_ATTRACT_RADIUS, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES, rarity=DEFAULT_RARITY):
         self.grid_size = grid_size
         self.cell_size = DEFAULT_GAME_AREA_SIZE // self.grid_size
         self.incubate_cycles = incubate_cycles
@@ -252,6 +263,7 @@ class Game:
         self.food_attract_radius = food_attract_radius
         self.lay_egg_interval = lay_egg_interval
         self.maturity_cycles = maturity_cycles
+        self.rarity = rarity
         self.reset()
         self.max_creature_age = 0
 
@@ -313,7 +325,8 @@ class Game:
                     food_radius = self.food_attract_radius
                     lay_interval = self.lay_egg_interval
                     maturity_cycles = self.maturity_cycles
-                    self.creatures.append(Creature(egg.x, egg.y, hunger, turn, food_radius, lay_interval, maturity_cycles))
+                    rarity = self.rarity
+                    self.creatures.append(Creature(egg.x, egg.y, hunger, turn, food_radius, lay_interval, maturity_cycles, rarity, self))
         food_positions = set(self.food)
         new_eggs = []
         food_list = self.food
@@ -332,7 +345,6 @@ class Game:
                         self.food.append(cell)
         self.creatures = [c for c in self.creatures if c.alive]
         self.eggs += new_eggs
-        # Update max_creature_age
         for creature in self.creatures:
             if creature.age > self.max_creature_age:
                 self.max_creature_age = creature.age
@@ -355,7 +367,8 @@ class GuideDialog(QDialog):
             "8. Max organism size is 4 cells, more will die.\n"
             "9. Complete creatures lay eggs every interval.\n"
             "10. Old (purple) creatures may lose features randomly as they age.\n"
-            "11. Use Settings to adjust parameters."
+            "11. Rarity: If food/egg is abundant, features are rare. If scarce, features are common.\n"
+            "12. Use Settings to adjust parameters."
         )
         label = QLabel(guide_text)
         label.setWordWrap(True)
@@ -446,6 +459,10 @@ class SettingsDialog(QDialog):
         self.spin_maturity = QSpinBox()
         self.spin_maturity.setRange(1, 1000)
         self.spin_maturity.setValue(self.game.maturity_cycles)
+        self.spin_rarity = QSpinBox()
+        self.spin_rarity.setRange(0, 100)
+        self.spin_rarity.setValue(int(self.game.rarity * 100))
+        self.spin_rarity.setSuffix(" %")
         self.layout.addRow("Grid size", self.spin_grid_size)
         self.layout.addRow("Cycle speed", self.spin_cycle_speed)
         self.layout.addRow("Egg incubate cycles", self.spin_incubate)
@@ -454,6 +471,7 @@ class SettingsDialog(QDialog):
         self.layout.addRow("Food attract radius", self.spin_food_radius)
         self.layout.addRow("Lay egg interval", self.spin_lay_egg)
         self.layout.addRow("Maturity cycles (old age)", self.spin_maturity)
+        self.layout.addRow("Feature rarity (higher = rarer)", self.spin_rarity)
         btn_ok = QPushButton("OK")
         btn_ok.clicked.connect(self.accept)
         self.layout.addRow(btn_ok)
@@ -467,7 +485,27 @@ class SettingsDialog(QDialog):
         food_radius = self.spin_food_radius.value()
         lay_egg_interval = self.spin_lay_egg.value()
         maturity_cycles = self.spin_maturity.value()
-        return grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles
+        rarity = self.spin_rarity.value() / 100.0
+        # Update game parameters in place for realtime effect
+        self.game.grid_size = grid_size
+        self.game.cell_size = DEFAULT_GAME_AREA_SIZE // grid_size
+        self.game.incubate_cycles = incubate_cycles
+        self.game.hunger_cycles = hunger_cycles
+        self.game.turn_interval = turn_interval
+        self.game.food_attract_radius = food_radius
+        self.game.lay_egg_interval = lay_egg_interval
+        self.game.maturity_cycles = maturity_cycles
+        self.game.rarity = rarity
+        # Update all existing creatures with new parameters
+        for creature in getattr(self.game, "creatures", []):
+            creature.hunger_cycles = hunger_cycles
+            creature.turn_interval = turn_interval
+            creature.food_attract_radius = food_radius
+            creature.lay_egg_interval = lay_egg_interval
+            creature.maturity_cycles = maturity_cycles
+            creature.rarity = rarity
+            creature.game = self.game
+        return grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles, rarity
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -529,6 +567,7 @@ class MainWindow(QMainWindow):
             "Game of Predators:\n"
             "Eggs hatch into creatures that eat, grow, and evolve features.\n"
             "Complete creatures lay eggs; old age may cause feature loss.\n"
+            "Rarity: If food/egg is abundant, features are rare. If scarce, features are common.\n"
             "Game ends when all creatures and eggs are gone."
         )
         self.explanation_label = QLabel(explanation)
@@ -578,14 +617,12 @@ class MainWindow(QMainWindow):
     def show_settings(self):
         dialog = SettingsDialog(self, self.game, self.cycle_speed)
         if dialog.exec():
-            grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles = dialog.apply_settings()
+            grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles, rarity = dialog.apply_settings()
             self.cycle_speed = cycle_speed
-            self.game = Game(grid_size, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles)
-            self.widget.game = self.game
             self.widget.setFixedSize(DEFAULT_GAME_AREA_SIZE, DEFAULT_GAME_AREA_SIZE)
             self.setFixedSize(DEFAULT_GAME_AREA_SIZE + 40, DEFAULT_GAME_AREA_SIZE + 180)
-            self.clear_game()
             self.timer.setInterval(self.cycle_speed)
+            self.widget.update()
 
     def show_guide(self):
         dialog = GuideDialog(self)
@@ -639,7 +676,5 @@ if __name__ == "__main__":
     icon_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "Game of Predators.ico")
     app.setWindowIcon(QIcon(icon_path))
     window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
     window.show()
     sys.exit(app.exec())
