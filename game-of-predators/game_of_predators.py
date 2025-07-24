@@ -149,9 +149,7 @@ class Creature:
     def try_cooperate(self, other, coop_probability, current_cycle, creatures):
         if not self.can_cooperate_with(other, creatures):
             return False
-        # Group-to-group merge logic
         if self.coop_group and other.coop_group and self.coop_group is not other.coop_group:
-            # Only allow if both have nucleus and both are old
             if any(c.is_nucleus for c in self.coop_group) and any(c.is_nucleus for c in other.coop_group):
                 recruiter = None
                 for c in self.coop_group:
@@ -924,7 +922,7 @@ class SettingsDialog(QDialog):
         self.game = game
         self.layout = QFormLayout(self)
         self.spin_grid_size = QSpinBox()
-        self.spin_grid_size.setRange(10, 200)
+        self.spin_grid_size.setRange(10, 300)  # Ubah batas maksimum dari 100 menjadi 300
         self.spin_grid_size.setValue(self.game.grid_size)
         self.spin_cycle_speed = QSpinBox()
         self.spin_cycle_speed.setRange(10, 2000)
@@ -980,6 +978,7 @@ class SettingsDialog(QDialog):
         maturity_cycles = self.spin_maturity.value()
         rarity = self.spin_rarity.value() / 100.0
         recruit_radius = self.spin_recruit_radius.value()
+        grid_size_changed = (self.game.grid_size != grid_size)
         self.game.grid_size = grid_size
         self.game.cell_size = DEFAULT_GAME_AREA_SIZE // grid_size
         self.game.incubate_cycles = incubate_cycles
@@ -999,6 +998,8 @@ class SettingsDialog(QDialog):
             creature.rarity = rarity
             creature.game = self.game
             creature.recruit_radius = recruit_radius
+        if grid_size_changed:
+            self.game.reset()
         return grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles, rarity, recruit_radius
 
 class MainWindow(QMainWindow):
