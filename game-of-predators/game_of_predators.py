@@ -2,7 +2,7 @@ import sys
 import os
 import numpy as np
 import random
-from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSpinBox, QDialog, QFormLayout, QSizePolicy, QGridLayout
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QSpinBox, QDialog, QFormLayout, QSizePolicy, QGridLayout, QSpacerItem, QMessageBox
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPainter, QColor, QPen, QIcon
 
@@ -22,7 +22,9 @@ COLOR_EYE = QColor(0, 255, 0)
 COLOR_FOOD = QColor(255, 255, 0)
 COLOR_EGG = QColor(200, 200, 200)
 
-DIRECTIONS = [(1,0), (0,1), (-1,0), (0,-1)]  # right, down, left, up
+DIRECTIONS = [
+    (1,0), (1,1), (0,1), (-1,1), (-1,0), (-1,-1), (0,-1), (1,-1)
+]
 
 class Egg:
     def __init__(self, x, y, incubate_cycles):
@@ -35,7 +37,7 @@ class Egg:
 class Creature:
     def __init__(self, x, y, hunger_cycles, turn_interval, food_attract_radius, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL):
         self.neutral = (x, y)
-        self.direction_idx = random.randint(0, 3)
+        self.direction_idx = random.randint(0, 7)
         self.direction = DIRECTIONS[self.direction_idx]
         self.cells = {'neutral': [(x, y)]}
         self.hunger_cycles = hunger_cycles
@@ -52,8 +54,7 @@ class Creature:
         self.lay_egg_interval = lay_egg_interval
 
     def rotate(self):
-        # Rotasi random, bukan hanya melingkar
-        self.direction_idx = random.randint(0, 3)
+        self.direction_idx = random.randint(0, 7)
         self.direction = DIRECTIONS[self.direction_idx]
         self._update_attached_cells()
 
@@ -65,7 +66,7 @@ class Creature:
         if self.has_leg:
             self.cells['leg'] = [(tx - dx, ty - dy)]
         if self.has_eye:
-            ex, ey = -dy, dx
+            ex, ey = dy, -dx
             self.cells['eye'] = [(tx + ex, ty + ey)]
 
     def move(self, grid_size, food_positions, eggs, creatures, current_cycle, food_list):
@@ -75,7 +76,6 @@ class Creature:
             head_x, head_y = self.neutral
             nearest_target = None
             min_dist = None
-            # Gabungkan food dan egg yang belum hatched sebagai target
             egg_targets = [(egg.x, egg.y) for egg in eggs if not egg.hatched]
             all_targets = set(food_positions) | set(egg_targets)
             for tx, ty in all_targets:
@@ -102,12 +102,13 @@ class Creature:
                         else:
                             break
                     if found_target:
-                        # Neutral bergerak ke arah eye
                         nx, ny = self.neutral
                         tx, ty = nx + dx_eye, ny + dy_eye
                         if 0 <= tx < grid_size and 0 <= ty < grid_size:
-                            self.direction = (dx_eye, dy_eye)
-                            self.direction_idx = DIRECTIONS.index(self.direction) if self.direction in DIRECTIONS else self.direction_idx
+                            # Cari index arah diagonal
+                            if (dx_eye, dy_eye) in DIRECTIONS:
+                                self.direction_idx = DIRECTIONS.index((dx_eye, dy_eye))
+                                self.direction = DIRECTIONS[self.direction_idx]
                             self.neutral = (tx, ty)
                             self.cells['neutral'] = [self.neutral]
                             self._update_attached_cells()
@@ -115,11 +116,9 @@ class Creature:
             elif nearest_target:
                 dx = np.sign(nearest_target[0] - head_x)
                 dy = np.sign(nearest_target[1] - head_y)
-                for idx, (ddx, ddy) in enumerate(DIRECTIONS):
-                    if (dx, dy) == (ddx, ddy):
-                        self.direction_idx = idx
-                        self.direction = DIRECTIONS[self.direction_idx]
-                        break
+                if (dx, dy) in DIRECTIONS:
+                    self.direction_idx = DIRECTIONS.index((dx, dy))
+                    self.direction = DIRECTIONS[self.direction_idx]
             if self.steps_since_turn >= self.turn_interval:
                 self.rotate()
                 self.steps_since_turn = 0
@@ -285,6 +284,31 @@ class Game:
         self.eggs += new_eggs
         self.update_grid()
 
+class GuideDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Game Guide")
+        layout = QVBoxLayout(self)
+        guide_text = (
+            "Game of Predators - Guide\n\n"
+            "1. Left click to place an egg (gray).\n"
+            "2. Right click to place food (yellow).\n"
+            "3. Eggs hatch after N cycles.\n"
+            "4. Creatures can eat eggs/food to grow weapon, leg, or eye.\n"
+            "5. Weapon (red) kills other creatures.\n"
+            "6. Leg (blue) increases speed.\n"
+            "7. Eye (green) sees food/egg in its direction and pulls neutral toward it.\n"
+            "8. Max organism size is 4 cells, more will die.\n"
+            "9. Complete creatures lay eggs every interval.\n"
+            "10. Use Settings to adjust parameters."
+        )
+        label = QLabel(guide_text)
+        label.setWordWrap(True)
+        layout.addWidget(label)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close)
+
 class GameWidget(QWidget):
     def __init__(self, game, main_window=None):
         super().__init__()
@@ -395,13 +419,16 @@ class MainWindow(QMainWindow):
         self.running = False
 
         btn_start = QPushButton("Start/Stop")
-        btn_start.clicked.connect(self.toggle)
         btn_clear = QPushButton("Clear")
-        btn_clear.clicked.connect(self.clear_game)
         btn_settings = QPushButton("Settings")
+        btn_guide = QPushButton("Guide")
+        btn_start.clicked.connect(self.toggle)
+        btn_clear.clicked.connect(self.clear_game)
         btn_settings.clicked.connect(self.show_settings)
+        btn_guide.clicked.connect(self.show_guide)
 
         self.label_cycle = QLabel("Cycle: 0")
+        self.label_time = QLabel("Time: 00:00:00")
         self.label_eggs = QLabel("Eggs: 0")
         self.label_food = QLabel("Food: 0")
 
@@ -409,9 +436,13 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(btn_start)
         top_layout.addWidget(btn_clear)
         top_layout.addWidget(btn_settings)
-        top_layout.addWidget(self.label_cycle)
-        top_layout.addWidget(self.label_eggs)
-        top_layout.addWidget(self.label_food)
+        top_layout.addWidget(btn_guide)
+
+        stats_layout = QHBoxLayout()
+        stats_layout.addWidget(self.label_cycle)
+        stats_layout.addWidget(self.label_time)
+        stats_layout.addWidget(self.label_eggs)
+        stats_layout.addWidget(self.label_food)
 
         legend_grid = QGridLayout()
         legend_grid.setSpacing(1)
@@ -421,10 +452,11 @@ class MainWindow(QMainWindow):
         legend_grid.addWidget(self._legend_label(COLOR_NEUTRAL, "Neutral (creature)"), 0, 2)
         legend_grid.addWidget(self._legend_label(COLOR_WEAPON, "Weapon (kill, turns to food)"), 1, 0)
         legend_grid.addWidget(self._legend_label(COLOR_LEG, "Leg (speed +1)"), 1, 1)
-        legend_grid.addWidget(self._legend_label(COLOR_EYE, "Eye (see food, turn)"), 1, 2)
+        legend_grid.addWidget(self._legend_label(COLOR_EYE, "Eye (see food/egg, turn)"), 1, 2)
 
         layout = QVBoxLayout()
         layout.addLayout(top_layout)
+        layout.addLayout(stats_layout)
         layout.addLayout(legend_grid)
         center_layout = QHBoxLayout()
         center_layout.addWidget(self.widget)
@@ -463,6 +495,7 @@ class MainWindow(QMainWindow):
         self.update_egg_count()
         self.update_food_count()
         self.label_cycle.setText("Cycle: 0")
+        self.label_time.setText("Time: 00:00:00")
 
     def update_egg_count(self):
         eggs = [egg for egg in self.game.eggs if not egg.hatched]
@@ -488,6 +521,10 @@ class MainWindow(QMainWindow):
             self.clear_game()
             self.timer.setInterval(self.cycle_speed)
 
+    def show_guide(self):
+        dialog = GuideDialog(self)
+        dialog.exec()
+
     def toggle(self):
         if self.running:
             self.timer.stop()
@@ -495,12 +532,37 @@ class MainWindow(QMainWindow):
             self.timer.start(self.cycle_speed)
         self.running = not self.running
 
+    def format_time(self, cycles, ms_per_cycle):
+        total_ms = cycles * ms_per_cycle
+        total_seconds = total_ms // 1000
+        h = total_seconds // 3600
+        m = (total_seconds % 3600) // 60
+        s = total_seconds % 60
+        return f"{h:02}:{m:02}:{s:02}"
+
+    def show_extinct_dialog(self):
+        cycles = self.game.cycle
+        duration = self.format_time(cycles, self.cycle_speed)
+        stats_text = (
+            f"Population Extinct!\n\n"
+            f"Cycles: {cycles}\n"
+            f"Time: {duration}\n"
+        )
+        QMessageBox.information(self, "Population Extinct", stats_text)
+
     def next_step(self):
         self.game.step()
         self.label_cycle.setText(f"Cycle: {self.game.cycle}")
+        self.label_time.setText(f"Time: {self.format_time(self.game.cycle, self.cycle_speed)}")
         self.update_egg_count()
         self.update_food_count()
         self.widget.update()
+        # Show extinction dialog if all creatures extinct and no eggs left
+        if len(self.game.creatures) == 0 and len([egg for egg in self.game.eggs if not egg.hatched]) == 0:
+            if self.running:
+                self.timer.stop()
+                self.running = False
+            self.show_extinct_dialog()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
