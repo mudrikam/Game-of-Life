@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, Q
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPainter, QColor, QPen, QIcon
 
-DEFAULT_GRID_SIZE = 200
+DEFAULT_GRID_SIZE = 100
 DEFAULT_GAME_AREA_SIZE = 400
 DEFAULT_CYCLE_SPEED = 25
 DEFAULT_INCU_CYCLES = 20
@@ -62,6 +62,8 @@ class Creature:
         self.last_feature_loss_age = None
         self.rarity = rarity
         self.game = game
+        self.coop_group = set()
+        self.last_coop_cycle = -1
 
     def rotate(self):
         self.direction_idx = random.randint(0, 7)
@@ -111,7 +113,51 @@ class Creature:
                 self.cells.pop('eye', None)
             self.last_feature_loss_age = self.age
 
-    def move(self, grid_size, food_positions, eggs, creatures, current_cycle, food_list):
+    def can_cooperate_with(self, other, creatures):
+        if not self.is_old or not self.alive or not other.is_old or not other.alive:
+            return False
+        # Allow coop if there is a path (orthogonal or diagonal) between two neutral cells,
+        # and all cells in between are not neutral (i.e., features allowed in between)
+        x1, y1 = self.neutral
+        x2, y2 = other.neutral
+        dx = np.sign(x2 - x1)
+        dy = np.sign(y2 - y1)
+        if dx == 0 and dy == 0:
+            return False
+        steps = max(abs(x2 - x1), abs(y2 - y1))
+        if steps == 1:
+            return True
+        for step in range(1, steps):
+            cx = x1 + dx * step
+            cy = y1 + dy * step
+            found = False
+            for c in creatures:
+                if c is self or c is other or not c.alive:
+                    continue
+                if (cx, cy) in c.cells.get('neutral', []):
+                    return False
+                if (cx, cy) in c.all_cells():
+                    found = True
+            if not found:
+                return False
+        return True
+
+    def try_cooperate(self, other, coop_probability, current_cycle, creatures):
+        if not self.can_cooperate_with(other, creatures):
+            return False
+        if random.random() < coop_probability:
+            group = set([self, other])
+            if hasattr(self, "coop_group") and self.coop_group:
+                group.update(self.coop_group)
+            if hasattr(other, "coop_group") and other.coop_group:
+                group.update(other.coop_group)
+            for member in group:
+                member.coop_group = group
+                member.last_coop_cycle = current_cycle
+            return True
+        return False
+
+    def move(self, grid_size, food_positions, eggs, creatures, current_cycle, food_list, coop_probability):
         self.age += 1
         if not self.is_old and self.age >= self.maturity_cycles:
             self.is_old = True
@@ -175,6 +221,25 @@ class Creature:
                 self.neutral = (tx, ty)
                 self.cells['neutral'] = [self.neutral]
                 self._update_attached_cells()
+            # Check for other creatures at the same cell (not only adjacent)
+            for other in creatures:
+                if other is not self and other.alive and other.neutral == self.neutral:
+                    # If both are old, decide between coop or kill
+                    if self.is_old and other.is_old:
+                        if self.try_cooperate(other, coop_probability, current_cycle, creatures):
+                            continue
+                        else:
+                            # If not coop, kill as usual
+                            if self.has_weapon:
+                                other.alive = False
+                            if other.has_weapon:
+                                self.alive = False
+                    else:
+                        # If not both old, kill as usual
+                        if self.has_weapon:
+                            other.alive = False
+                        if other.has_weapon:
+                            self.alive = False
             if self.has_weapon:
                 for wx, wy in self.cells['weapon']:
                     for c in creatures:
@@ -266,6 +331,7 @@ class Game:
         self.rarity = rarity
         self.reset()
         self.max_creature_age = 0
+        self.last_coop_probability = 0.0
 
     def reset(self):
         self.eggs = []
@@ -274,6 +340,7 @@ class Game:
         self.grid = np.zeros((self.grid_size, self.grid_size), dtype=np.uint8)
         self.cycle = 0
         self.max_creature_age = 0
+        self.last_coop_probability = 0.0
 
     def add_egg(self, x, y):
         for egg in self.eggs:
@@ -314,6 +381,18 @@ class Game:
 
     def step(self):
         self.cycle += 1
+        total_cells = self.grid_size * self.grid_size
+        food_count = len(self.food)
+        egg_count = len([egg for egg in self.eggs if not egg.hatched])
+        if total_cells == 0:
+            abundance = 1.0
+        else:
+            abundance = min(1.0, max(0.0, (food_count + egg_count) / total_cells))
+        if abundance >= 0.5:
+            coop_probability = 0.0
+        else:
+            coop_probability = 1.0 - (abundance * 2.0)
+        self.last_coop_probability = coop_probability
         for egg in self.eggs:
             if not egg.hatched:
                 if egg.born_cycle is None:
@@ -332,9 +411,13 @@ class Game:
         food_list = self.food
         for creature in self.creatures:
             if creature.alive:
-                egg_laid = creature.move(self.grid_size, food_positions, self.eggs, self.creatures, self.cycle, food_list)
+                egg_laid = creature.move(self.grid_size, food_positions, self.eggs, self.creatures, self.cycle, food_list, coop_probability)
                 if egg_laid:
                     new_eggs.append(egg_laid)
+                if creature.is_old and creature.coop_group and creature.last_coop_cycle == self.cycle:
+                    coop_size = len([c for c in creature.coop_group if c.alive and c.is_old])
+                    if coop_size > 1:
+                        creature.hunger += (coop_size - 1)
                 creature.hunger -= 1
                 if creature.hunger <= 0:
                     creature.alive = False
@@ -368,7 +451,8 @@ class GuideDialog(QDialog):
             "9. Complete creatures lay eggs every interval.\n"
             "10. Old (purple) creatures may lose features randomly as they age.\n"
             "11. Rarity: If food/egg is abundant, features are rare. If scarce, features are common.\n"
-            "12. Use Settings to adjust parameters."
+            "12. Cooperation: Old cells can cooperate to extend hunger if food/egg is rare.\n"
+            "13. Use Settings to adjust parameters."
         )
         label = QLabel(guide_text)
         label.setWordWrap(True)
@@ -531,6 +615,7 @@ class MainWindow(QMainWindow):
         self.label_time = QLabel("Time: 00:00:00")
         self.label_eggs = QLabel("Eggs: 0")
         self.label_food = QLabel("Food: 0")
+        self.label_coop = QLabel("Coop Prob: 0%")
 
         top_layout = QHBoxLayout()
         top_layout.addWidget(btn_start)
@@ -543,6 +628,7 @@ class MainWindow(QMainWindow):
         stats_layout.addWidget(self.label_time)
         stats_layout.addWidget(self.label_eggs)
         stats_layout.addWidget(self.label_food)
+        stats_layout.addWidget(self.label_coop)
 
         legend_grid = QGridLayout()
         legend_grid.setSpacing(1)
@@ -568,6 +654,7 @@ class MainWindow(QMainWindow):
             "Eggs hatch into creatures that eat, grow, and evolve features.\n"
             "Complete creatures lay eggs; old age may cause feature loss.\n"
             "Rarity: If food/egg is abundant, features are rare. If scarce, features are common.\n"
+            "Cooperation: Old cells can cooperate to extend hunger if food/egg is rare.\n"
             "Game ends when all creatures and eggs are gone."
         )
         self.explanation_label = QLabel(explanation)
@@ -601,6 +688,7 @@ class MainWindow(QMainWindow):
         self.update_food_count()
         self.label_cycle.setText("Cycle: 0")
         self.label_time.setText("Time: 00:00:00")
+        self.label_coop.setText("Coop Prob: 0%")
 
     def update_egg_count(self):
         eggs = [egg for egg in self.game.eggs if not egg.hatched]
@@ -613,6 +701,11 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         self.update_egg_count()
         self.update_food_count()
+        self.update_coop_prob()
+
+    def update_coop_prob(self):
+        prob = int(round(self.game.last_coop_probability * 100))
+        self.label_coop.setText(f"Coop Prob: {prob}%")
 
     def show_settings(self):
         dialog = SettingsDialog(self, self.game, self.cycle_speed)
@@ -623,6 +716,7 @@ class MainWindow(QMainWindow):
             self.setFixedSize(DEFAULT_GAME_AREA_SIZE + 40, DEFAULT_GAME_AREA_SIZE + 180)
             self.timer.setInterval(self.cycle_speed)
             self.widget.update()
+            self.update_coop_prob()
 
     def show_guide(self):
         dialog = GuideDialog(self)
@@ -647,11 +741,13 @@ class MainWindow(QMainWindow):
         cycles = self.game.cycle
         duration = self.format_time(cycles, self.cycle_speed)
         max_age = self.game.max_creature_age
+        coop_prob = int(round(self.game.last_coop_probability * 100))
         stats_text = (
             f"Population Extinct!\n\n"
             f"Cycles: {cycles}\n"
             f"Time: {duration}\n"
             f"Oldest organism age: {max_age}\n"
+            f"Coop probability: {coop_prob}%\n"
         )
         QMessageBox.information(self, "Population Extinct", stats_text)
 
@@ -661,6 +757,7 @@ class MainWindow(QMainWindow):
         self.label_time.setText(f"Time: {self.format_time(self.game.cycle, self.cycle_speed)}")
         self.update_egg_count()
         self.update_food_count()
+        self.update_coop_prob()
         self.widget.update()
         if len(self.game.creatures) == 0 and len([egg for egg in self.game.eggs if not egg.hatched]) == 0:
             if self.running:
