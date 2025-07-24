@@ -6,14 +6,14 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, Q
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPainter, QColor, QPen, QIcon
 
-DEFAULT_GRID_SIZE = 100
+DEFAULT_GRID_SIZE = 200
 DEFAULT_GAME_AREA_SIZE = 400
 DEFAULT_CYCLE_SPEED = 25
 DEFAULT_INCU_CYCLES = 20
 DEFAULT_HUNGER_CYCLES = 200
 DEFAULT_TURN_INTERVAL = 10
 DEFAULT_FOOD_ATTRACT_RADIUS = 20
-DEFAULT_LAY_EGG_INTERVAL = 50
+DEFAULT_LAY_EGG_INTERVAL = 100
 DEFAULT_MATURITY_CYCLES = 300
 DEFAULT_RARITY = 0.5
 
@@ -435,26 +435,26 @@ class SettingsDialog(QDialog):
         self.game = game
         self.layout = QFormLayout(self)
         self.spin_grid_size = QSpinBox()
-        self.spin_grid_size.setRange(10, 100)
+        self.spin_grid_size.setRange(10, 200)
         self.spin_grid_size.setValue(self.game.grid_size)
         self.spin_cycle_speed = QSpinBox()
         self.spin_cycle_speed.setRange(10, 2000)
         self.spin_cycle_speed.setValue(cycle_speed)
         self.spin_cycle_speed.setSuffix(" ms")
         self.spin_incubate = QSpinBox()
-        self.spin_incubate.setRange(1, 100)
+        self.spin_incubate.setRange(1, 500)
         self.spin_incubate.setValue(self.game.incubate_cycles)
         self.spin_hunger = QSpinBox()
-        self.spin_hunger.setRange(1, 200)
+        self.spin_hunger.setRange(1, 500)
         self.spin_hunger.setValue(self.game.hunger_cycles)
         self.spin_turn = QSpinBox()
-        self.spin_turn.setRange(1, 50)
+        self.spin_turn.setRange(1, 500)
         self.spin_turn.setValue(self.game.turn_interval)
         self.spin_food_radius = QSpinBox()
-        self.spin_food_radius.setRange(1, 40)
+        self.spin_food_radius.setRange(1, 500)
         self.spin_food_radius.setValue(self.game.food_attract_radius)
         self.spin_lay_egg = QSpinBox()
-        self.spin_lay_egg.setRange(1, 200)
+        self.spin_lay_egg.setRange(1, 500)
         self.spin_lay_egg.setValue(DEFAULT_LAY_EGG_INTERVAL)
         self.spin_maturity = QSpinBox()
         self.spin_maturity.setRange(1, 1000)
