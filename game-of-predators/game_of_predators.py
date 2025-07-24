@@ -6,14 +6,15 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, Q
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPainter, QColor, QPen, QIcon
 
-DEFAULT_GRID_SIZE = 40
+DEFAULT_GRID_SIZE = 100
 DEFAULT_GAME_AREA_SIZE = 400
-DEFAULT_CYCLE_SPEED = 50
+DEFAULT_CYCLE_SPEED = 25
 DEFAULT_INCU_CYCLES = 20
-DEFAULT_HUNGER_CYCLES = 40
+DEFAULT_HUNGER_CYCLES = 200
 DEFAULT_TURN_INTERVAL = 10
-DEFAULT_FOOD_ATTRACT_RADIUS = 5
+DEFAULT_FOOD_ATTRACT_RADIUS = 20
 DEFAULT_LAY_EGG_INTERVAL = 50
+DEFAULT_MATURITY_CYCLES = 300
 
 COLOR_NEUTRAL = QColor(128, 128, 128)
 COLOR_WEAPON = QColor(255, 0, 0)
@@ -21,6 +22,7 @@ COLOR_LEG = QColor(0, 0, 255)
 COLOR_EYE = QColor(0, 255, 0)
 COLOR_FOOD = QColor(255, 255, 0)
 COLOR_EGG = QColor(200, 200, 200)
+COLOR_OLD = QColor(128, 0, 128)
 
 DIRECTIONS = [
     (1,0), (1,1), (0,1), (-1,1), (-1,0), (-1,-1), (0,-1), (1,-1)
@@ -35,7 +37,7 @@ class Egg:
         self.hatched = False
 
 class Creature:
-    def __init__(self, x, y, hunger_cycles, turn_interval, food_attract_radius, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL):
+    def __init__(self, x, y, hunger_cycles, turn_interval, food_attract_radius, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES):
         self.neutral = (x, y)
         self.direction_idx = random.randint(0, 7)
         self.direction = DIRECTIONS[self.direction_idx]
@@ -52,6 +54,11 @@ class Creature:
         self.alive = True
         self.last_lay_cycle = 0
         self.lay_egg_interval = lay_egg_interval
+        self.age = 0
+        self.maturity_cycles = maturity_cycles
+        self.is_old = False
+        self.old_since = None
+        self.last_feature_loss_age = None
 
     def rotate(self):
         self.direction_idx = random.randint(0, 7)
@@ -69,7 +76,45 @@ class Creature:
             ex, ey = dy, -dx
             self.cells['eye'] = [(tx + ex, ty + ey)]
 
+    def maybe_lose_feature(self):
+        if not self.is_old:
+            return
+        if self.last_feature_loss_age is not None:
+            if self.age - self.last_feature_loss_age < self.maturity_cycles:
+                return
+        features = []
+        if self.has_weapon:
+            features.append('weapon')
+        if self.has_leg:
+            features.append('leg')
+        if self.has_eye:
+            features.append('eye')
+        if not features:
+            return
+        max_prob = 0.8
+        min_prob = 0.05
+        old_age = self.age - self.maturity_cycles
+        prob = min_prob + min(max_prob - min_prob, old_age / (self.maturity_cycles * 2))
+        if random.random() < prob:
+            lost = random.choice(features)
+            if lost == 'weapon':
+                self.has_weapon = False
+                self.cells.pop('weapon', None)
+            elif lost == 'leg':
+                self.has_leg = False
+                self.cells.pop('leg', None)
+            elif lost == 'eye':
+                self.has_eye = False
+                self.cells.pop('eye', None)
+            self.last_feature_loss_age = self.age
+
     def move(self, grid_size, food_positions, eggs, creatures, current_cycle, food_list):
+        self.age += 1
+        if not self.is_old and self.age >= self.maturity_cycles:
+            self.is_old = True
+            self.old_since = self.age
+        if self.is_old:
+            self.maybe_lose_feature()
         speed = 1 + (1 if self.has_leg else 0)
         for _ in range(speed):
             self.steps_since_turn += 1
@@ -84,7 +129,6 @@ class Creature:
                     if min_dist is None or dist < min_dist:
                         min_dist = dist
                         nearest_target = (tx, ty)
-            # Mata: jika ada food/egg di arah mata, neutral akan bergerak ke arah itu
             if self.has_eye:
                 eye_pos = self.cells['eye'][0]
                 ex, ey = eye_pos
@@ -105,7 +149,6 @@ class Creature:
                         nx, ny = self.neutral
                         tx, ty = nx + dx_eye, ny + dy_eye
                         if 0 <= tx < grid_size and 0 <= ty < grid_size:
-                            # Cari index arah diagonal
                             if (dx_eye, dy_eye) in DIRECTIONS:
                                 self.direction_idx = DIRECTIONS.index((dx_eye, dy_eye))
                                 self.direction = DIRECTIONS[self.direction_idx]
@@ -200,7 +243,7 @@ class Creature:
         return result
 
 class Game:
-    def __init__(self, grid_size=DEFAULT_GRID_SIZE, incubate_cycles=DEFAULT_INCU_CYCLES, hunger_cycles=DEFAULT_HUNGER_CYCLES, turn_interval=DEFAULT_TURN_INTERVAL, food_attract_radius=DEFAULT_FOOD_ATTRACT_RADIUS, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL):
+    def __init__(self, grid_size=DEFAULT_GRID_SIZE, incubate_cycles=DEFAULT_INCU_CYCLES, hunger_cycles=DEFAULT_HUNGER_CYCLES, turn_interval=DEFAULT_TURN_INTERVAL, food_attract_radius=DEFAULT_FOOD_ATTRACT_RADIUS, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES):
         self.grid_size = grid_size
         self.cell_size = DEFAULT_GAME_AREA_SIZE // self.grid_size
         self.incubate_cycles = incubate_cycles
@@ -208,7 +251,9 @@ class Game:
         self.turn_interval = turn_interval
         self.food_attract_radius = food_attract_radius
         self.lay_egg_interval = lay_egg_interval
+        self.maturity_cycles = maturity_cycles
         self.reset()
+        self.max_creature_age = 0
 
     def reset(self):
         self.eggs = []
@@ -216,6 +261,7 @@ class Game:
         self.food = []
         self.grid = np.zeros((self.grid_size, self.grid_size), dtype=np.uint8)
         self.cycle = 0
+        self.max_creature_age = 0
 
     def add_egg(self, x, y):
         for egg in self.eggs:
@@ -240,7 +286,10 @@ class Game:
             if creature.alive:
                 for cell in creature.cells.get('neutral', []):
                     if 0 <= cell[0] < self.grid_size and 0 <= cell[1] < self.grid_size:
-                        self.grid[cell[0], cell[1]] = 4
+                        if getattr(creature, "is_old", False):
+                            self.grid[cell[0], cell[1]] = 8
+                        else:
+                            self.grid[cell[0], cell[1]] = 4
                 for cell in creature.cells.get('weapon', []):
                     if 0 <= cell[0] < self.grid_size and 0 <= cell[1] < self.grid_size:
                         self.grid[cell[0], cell[1]] = 5
@@ -263,7 +312,8 @@ class Game:
                     turn = self.turn_interval
                     food_radius = self.food_attract_radius
                     lay_interval = self.lay_egg_interval
-                    self.creatures.append(Creature(egg.x, egg.y, hunger, turn, food_radius, lay_interval))
+                    maturity_cycles = self.maturity_cycles
+                    self.creatures.append(Creature(egg.x, egg.y, hunger, turn, food_radius, lay_interval, maturity_cycles))
         food_positions = set(self.food)
         new_eggs = []
         food_list = self.food
@@ -282,6 +332,10 @@ class Game:
                         self.food.append(cell)
         self.creatures = [c for c in self.creatures if c.alive]
         self.eggs += new_eggs
+        # Update max_creature_age
+        for creature in self.creatures:
+            if creature.age > self.max_creature_age:
+                self.max_creature_age = creature.age
         self.update_grid()
 
 class GuideDialog(QDialog):
@@ -300,7 +354,8 @@ class GuideDialog(QDialog):
             "7. Eye (green) sees food/egg in its direction and pulls neutral toward it.\n"
             "8. Max organism size is 4 cells, more will die.\n"
             "9. Complete creatures lay eggs every interval.\n"
-            "10. Use Settings to adjust parameters."
+            "10. Old (purple) creatures may lose features randomly as they age.\n"
+            "11. Use Settings to adjust parameters."
         )
         label = QLabel(guide_text)
         label.setWordWrap(True)
@@ -335,6 +390,8 @@ class GameWidget(QWidget):
                     painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, COLOR_LEG)
                 elif val == 7:
                     painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, COLOR_EYE)
+                elif val == 8:
+                    painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, COLOR_OLD)
         pen = QPen(QColor(200, 200, 200))
         pen.setWidth(2)
         painter.setPen(pen)
@@ -386,6 +443,9 @@ class SettingsDialog(QDialog):
         self.spin_lay_egg = QSpinBox()
         self.spin_lay_egg.setRange(1, 200)
         self.spin_lay_egg.setValue(DEFAULT_LAY_EGG_INTERVAL)
+        self.spin_maturity = QSpinBox()
+        self.spin_maturity.setRange(1, 1000)
+        self.spin_maturity.setValue(self.game.maturity_cycles)
         self.layout.addRow("Grid size", self.spin_grid_size)
         self.layout.addRow("Cycle speed", self.spin_cycle_speed)
         self.layout.addRow("Egg incubate cycles", self.spin_incubate)
@@ -393,6 +453,7 @@ class SettingsDialog(QDialog):
         self.layout.addRow("Creature turn interval", self.spin_turn)
         self.layout.addRow("Food attract radius", self.spin_food_radius)
         self.layout.addRow("Lay egg interval", self.spin_lay_egg)
+        self.layout.addRow("Maturity cycles (old age)", self.spin_maturity)
         btn_ok = QPushButton("OK")
         btn_ok.clicked.connect(self.accept)
         self.layout.addRow(btn_ok)
@@ -405,7 +466,8 @@ class SettingsDialog(QDialog):
         turn_interval = self.spin_turn.value()
         food_radius = self.spin_food_radius.value()
         lay_egg_interval = self.spin_lay_egg.value()
-        return grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval
+        maturity_cycles = self.spin_maturity.value()
+        return grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -453,6 +515,7 @@ class MainWindow(QMainWindow):
         legend_grid.addWidget(self._legend_label(COLOR_WEAPON, "Weapon (kill, turns to food)"), 1, 0)
         legend_grid.addWidget(self._legend_label(COLOR_LEG, "Leg (speed +1)"), 1, 1)
         legend_grid.addWidget(self._legend_label(COLOR_EYE, "Eye (see food/egg, turn)"), 1, 2)
+        legend_grid.addWidget(self._legend_label(COLOR_OLD, "Old (may lose features)"), 2, 0)
 
         layout = QVBoxLayout()
         layout.addLayout(top_layout)
@@ -463,7 +526,10 @@ class MainWindow(QMainWindow):
         layout.addLayout(center_layout)
 
         explanation = (
-            "Game of Predators (prototype):\n"
+            "Game of Predators:\n"
+            "Eggs hatch into creatures that eat, grow, and evolve features.\n"
+            "Complete creatures lay eggs; old age may cause feature loss.\n"
+            "Game ends when all creatures and eggs are gone."
         )
         self.explanation_label = QLabel(explanation)
         self.explanation_label.setWordWrap(True)
@@ -512,9 +578,9 @@ class MainWindow(QMainWindow):
     def show_settings(self):
         dialog = SettingsDialog(self, self.game, self.cycle_speed)
         if dialog.exec():
-            grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval = dialog.apply_settings()
+            grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles = dialog.apply_settings()
             self.cycle_speed = cycle_speed
-            self.game = Game(grid_size, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval)
+            self.game = Game(grid_size, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles)
             self.widget.game = self.game
             self.widget.setFixedSize(DEFAULT_GAME_AREA_SIZE, DEFAULT_GAME_AREA_SIZE)
             self.setFixedSize(DEFAULT_GAME_AREA_SIZE + 40, DEFAULT_GAME_AREA_SIZE + 180)
@@ -543,10 +609,12 @@ class MainWindow(QMainWindow):
     def show_extinct_dialog(self):
         cycles = self.game.cycle
         duration = self.format_time(cycles, self.cycle_speed)
+        max_age = self.game.max_creature_age
         stats_text = (
             f"Population Extinct!\n\n"
             f"Cycles: {cycles}\n"
             f"Time: {duration}\n"
+            f"Oldest organism age: {max_age}\n"
         )
         QMessageBox.information(self, "Population Extinct", stats_text)
 
@@ -557,7 +625,6 @@ class MainWindow(QMainWindow):
         self.update_egg_count()
         self.update_food_count()
         self.widget.update()
-        # Show extinction dialog if all creatures extinct and no eggs left
         if len(self.game.creatures) == 0 and len([egg for egg in self.game.eggs if not egg.hatched]) == 0:
             if self.running:
                 self.timer.stop()
@@ -572,5 +639,7 @@ if __name__ == "__main__":
     icon_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "Game of Predators.ico")
     app.setWindowIcon(QIcon(icon_path))
     window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
     window.show()
     sys.exit(app.exec())
