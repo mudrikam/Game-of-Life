@@ -26,6 +26,7 @@ COLOR_FOOD = QColor(255, 255, 0)
 COLOR_EGG = QColor(200, 200, 200)
 COLOR_OLD = QColor(128, 0, 128)
 COLOR_NUCLEUS = QColor(255, 128, 0)
+COLOR_PLANT = QColor(0, 200, 0)  # Hijau untuk PlantCell
 
 DIRECTIONS = [
     (1,0), (1,1), (0,1), (-1,1), (-1,0), (-1,-1), (0,-1), (1,-1)
@@ -34,6 +35,8 @@ DIRECTIONS = [
 COOP_ATTACH_DIRS = DIRECTIONS
 
 DEFAULT_IDLE_LIMIT = 10
+DEFAULT_PLANT_SPAWN_INTERVAL = 50
+DEFAULT_PLANT_LAY_FOOD_INTERVAL = 20
 
 class Egg:
     def __init__(self, x, y, incubate_cycles):
@@ -42,6 +45,110 @@ class Egg:
         self.incubate_cycles = incubate_cycles
         self.born_cycle = None
         self.hatched = False
+
+class PlantCell:
+    def __init__(self, x, y, lay_food_interval=DEFAULT_PLANT_LAY_FOOD_INTERVAL, game=None):
+        self.neutral = (x, y)
+        self.direction_idx = random.randint(0, 7)
+        self.direction = DIRECTIONS[self.direction_idx]
+        self.cells = {'neutral': [(x, y)]}
+        self.has_leg = False
+        self.has_eye = False
+        self.has_weapon = False
+        self.lay_food_interval = lay_food_interval
+        self.last_lay_cycle = 0
+        self.age = 0
+        self.alive = True
+        self.game = game
+        self.last_position = self.neutral
+        self.idle_counter = 0
+        self.idle_limit = getattr(game, "idle_limit", DEFAULT_IDLE_LIMIT) if game else DEFAULT_IDLE_LIMIT
+
+    def _update_attached_cells(self):
+        tx, ty = self.neutral
+        dx, dy = self.direction
+        if self.has_leg:
+            self.cells['leg'] = [(tx - dx, ty - dy)]
+        if self.has_eye:
+            ex, ey = dy, -dx
+            self.cells['eye'] = [(tx + ex, ty + ey)]
+
+    def rotate(self):
+        self.direction_idx = random.randint(0, 7)
+        self.direction = DIRECTIONS[self.direction_idx]
+        self._update_attached_cells()
+
+    def move(self, grid_size, current_cycle, food_list):
+        self.age += 1
+        speed = 1 + (1 if self.has_leg else 0)
+        for _ in range(speed):
+            self.direction_idx = random.randint(0, 7)
+            self.direction = DIRECTIONS[self.direction_idx]
+            dx, dy = self.direction
+            nx, ny = self.neutral
+            tx, ty = nx + dx, ny + dy
+            if 0 <= tx < grid_size and 0 <= ty < grid_size:
+                self.neutral = (tx, ty)
+                self.cells['neutral'] = [self.neutral]
+                self._update_attached_cells()
+                if self.last_position != self.neutral:
+                    self.idle_counter = 0
+                    self.last_position = self.neutral
+                else:
+                    self.idle_counter += 1
+            else:
+                self.rotate()
+                self.idle_counter += 1
+                continue
+            # PlantCell tidak bisa punya weapon, hanya leg/eye
+            # PlantCell tidak butuh makan, tidak pernah mati karena hunger
+            # PlantCell bisa mati jika dimakan oleh creature lain (handled in Game.step)
+            # PlantCell meletakkan food (egg) sesuai interval
+            if current_cycle - self.last_lay_cycle >= self.lay_food_interval:
+                tx, ty = self.neutral
+                self.last_lay_cycle = current_cycle
+                food_list.append((tx, ty))
+            if self.idle_counter >= self.idle_limit:
+                self.alive = False
+
+    def cell_count(self):
+        count = 0
+        for v in self.cells.values():
+            count += len(v)
+        return count
+
+    def feature_count(self):
+        count = 0
+        if self.has_leg:
+            count += 1
+        if self.has_eye:
+            count += 1
+        return count
+
+    def all_cells(self):
+        result = []
+        for v in self.cells.values():
+            result.extend(v)
+        return result
+
+    def grow(self, part):
+        if self.feature_count() >= 2:
+            return
+        options = []
+        if not self.has_leg:
+            options.append('leg')
+        if not self.has_eye:
+            options.append('eye')
+        if options:
+            if part == 'random':
+                chosen = random.choice(options)
+            else:
+                chosen = part
+            if chosen == 'leg' and not self.has_leg:
+                self.has_leg = True
+            elif chosen == 'eye' and not self.has_eye:
+                self.has_eye = True
+            self._update_attached_cells()
 
 class Creature:
     def __init__(self, x, y, hunger_cycles, turn_interval, food_radius, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES, rarity=DEFAULT_RARITY, game=None, recruit_radius=DEFAULT_RECRUIT_RADIUS):
@@ -684,7 +791,7 @@ class Creature:
         return result
 
 class Game:
-    def __init__(self, grid_size=DEFAULT_GRID_SIZE, incubate_cycles=DEFAULT_INCU_CYCLES, hunger_cycles=DEFAULT_HUNGER_CYCLES, turn_interval=DEFAULT_TURN_INTERVAL, food_radius=DEFAULT_food_radius, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES, rarity=DEFAULT_RARITY, recruit_radius=DEFAULT_RECRUIT_RADIUS):
+    def __init__(self, grid_size=DEFAULT_GRID_SIZE, incubate_cycles=DEFAULT_INCU_CYCLES, hunger_cycles=DEFAULT_HUNGER_CYCLES, turn_interval=DEFAULT_TURN_INTERVAL, food_radius=DEFAULT_food_radius, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES, rarity=DEFAULT_RARITY, recruit_radius=DEFAULT_RECRUIT_RADIUS, plant_spawn_interval=DEFAULT_PLANT_SPAWN_INTERVAL, plant_lay_food_interval=DEFAULT_PLANT_LAY_FOOD_INTERVAL):
         self.grid_size = grid_size
         self.cell_size = DEFAULT_GAME_AREA_SIZE // self.grid_size
         self.incubate_cycles = incubate_cycles
@@ -696,6 +803,8 @@ class Game:
         self.rarity = rarity
         self.recruit_radius = recruit_radius
         self.idle_limit = DEFAULT_IDLE_LIMIT
+        self.plant_spawn_interval = plant_spawn_interval
+        self.plant_lay_food_interval = plant_lay_food_interval
         self.reset()
         self.max_creature_age = 0
         self.last_coop_probability = 0.0
@@ -708,6 +817,8 @@ class Game:
         self.cycle = 0
         self.max_creature_age = 0
         self.last_coop_probability = 0.0
+        self.plant_cells = []
+        self._last_plant_spawn = 0
 
     def add_egg(self, x, y):
         for egg in self.eggs:
@@ -718,6 +829,11 @@ class Game:
     def add_food(self, x, y):
         if (x, y) not in self.food:
             self.food.append((x, y))
+
+    def add_plant_cell(self, x, y):
+        if any(pc.neutral == (x, y) for pc in self.plant_cells):
+            return
+        self.plant_cells.append(PlantCell(x, y, self.plant_lay_food_interval, self))
 
     def update_grid(self):
         self.grid[:] = 0
@@ -747,6 +863,17 @@ class Game:
                 for cell in creature.cells.get('eye', []):
                     if 0 <= cell[0] < self.grid_size and 0 <= cell[1] < self.grid_size:
                         self.grid[cell[0], cell[1]] = 7
+        for plant in self.plant_cells:
+            if plant.alive:
+                for cell in plant.cells.get('neutral', []):
+                    if 0 <= cell[0] < self.grid_size and 0 <= cell[1] < self.grid_size:
+                        self.grid[cell[0], cell[1]] = 10
+                for cell in plant.cells.get('leg', []):
+                    if 0 <= cell[0] < self.grid_size and 0 <= cell[1] < self.grid_size:
+                        self.grid[cell[0], cell[1]] = 11
+                for cell in plant.cells.get('eye', []):
+                    if 0 <= cell[0] < self.grid_size and 0 <= cell[1] < self.grid_size:
+                        self.grid[cell[0], cell[1]] = 12
 
     def step(self):
         self.cycle += 1
@@ -762,6 +889,19 @@ class Game:
         else:
             coop_probability = 1.0 - (abundance * 2.0)
         self.last_coop_probability = coop_probability
+        # PlantCell random spawn
+        if self.cycle - getattr(self, "_last_plant_spawn", 0) >= self.plant_spawn_interval:
+            empty_cells = [(x, y) for x in range(self.grid_size) for y in range(self.grid_size)
+                           if self.grid[x, y] == 0 and not any(pc.neutral == (x, y) for pc in self.plant_cells)]
+            if empty_cells:
+                px, py = random.choice(empty_cells)
+                self.add_plant_cell(px, py)
+            self._last_plant_spawn = self.cycle
+        # Move PlantCells
+        for plant in self.plant_cells:
+            if plant.alive:
+                plant.move(self.grid_size, self.cycle, self.food)
+        # Creature logic
         for egg in self.eggs:
             if not egg.hatched:
                 if egg.born_cycle is None:
@@ -787,12 +927,38 @@ class Game:
                 creature.hunger -= 1
                 if creature.hunger <= 0:
                     creature.alive = False
+        # PlantCell dimakan oleh creature
+        for creature in self.creatures:
+            if creature.alive:
+                for plant in self.plant_cells:
+                    if plant.alive and plant.neutral == creature.neutral:
+                        plant.alive = False
+                        creature.eat_and_grow()
+                        self.food.append(plant.neutral)
+        # PlantCell juga bisa dimakan oleh creature yang punya leg/eye
+        for creature in self.creatures:
+            if creature.alive:
+                for plant in self.plant_cells:
+                    if plant.alive:
+                        for cell in creature.all_cells():
+                            if cell == plant.neutral:
+                                plant.alive = False
+                                creature.eat_and_grow()
+                                self.food.append(plant.neutral)
+        # Creature mati jadi food
         for creature in self.creatures:
             if not creature.alive:
                 for cell in creature.all_cells():
                     if 0 <= cell[0] < self.grid_size and 0 <= cell[1] < self.grid_size:
                         self.food.append(cell)
+        # PlantCell mati jadi food
+        for plant in self.plant_cells:
+            if not plant.alive:
+                for cell in plant.all_cells():
+                    if 0 <= cell[0] < self.grid_size and 0 <= cell[1] < self.grid_size:
+                        self.food.append(cell)
         self.creatures = [c for c in self.creatures if c.alive]
+        self.plant_cells = [p for p in self.plant_cells if p.alive]
         self.eggs += new_eggs
         for creature in self.creatures:
             if creature.age > self.max_creature_age:
@@ -819,7 +985,8 @@ class GuideDialog(QDialog):
             "11. Rarity: If food/egg is abundant, features are rare. If scarce, features are common.\n"
             "12. Cooperation: Old cells can cooperate to extend hunger if food/egg is rare.\n"
             "13. Use Settings to adjust parameters.\n"
-            "14. Nucleus (orange): The first recruiter and only one per group. All group members share hunger and will cluster together."
+            "14. Nucleus (orange): The first recruiter and only one per group. All group members share hunger and will cluster together.\n"
+            "15. Plant cell (green): Moves randomly, cannot be upgraded with weapon, but can have leg/eye. Periodically drops food. Can be eaten by other creatures."
         )
         label = QLabel(guide_text)
         label.setWordWrap(True)
@@ -858,6 +1025,12 @@ class GameWidget(QWidget):
                     painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, COLOR_OLD)
                 elif val == 9:
                     painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, COLOR_NUCLEUS)
+                elif val == 10:
+                    painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, COLOR_PLANT)
+                elif val == 11:
+                    painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, COLOR_LEG)
+                elif val == 12:
+                    painter.fillRect(x*cell_size, y*cell_size, cell_size, cell_size, COLOR_EYE)
         pen = QPen(QColor(200, 200, 200))
         pen.setWidth(2)
         painter.setPen(pen)
@@ -875,6 +1048,13 @@ class GameWidget(QWidget):
                 self.update()
                 if self.main_window:
                     self.main_window.update_egg_count()
+                    self.main_window.update_food_count()
+                return
+            if modifiers & Qt.ShiftModifier:
+                self.game.add_plant_cell(x, y)
+                self.game.update_grid()
+                self.update()
+                if self.main_window:
                     self.main_window.update_food_count()
                 return
             if event.button() == Qt.LeftButton:
@@ -922,7 +1102,7 @@ class SettingsDialog(QDialog):
         self.game = game
         self.layout = QFormLayout(self)
         self.spin_grid_size = QSpinBox()
-        self.spin_grid_size.setRange(10, 300)  # Ubah batas maksimum dari 100 menjadi 300
+        self.spin_grid_size.setRange(10, 300)
         self.spin_grid_size.setValue(self.game.grid_size)
         self.spin_cycle_speed = QSpinBox()
         self.spin_cycle_speed.setRange(10, 2000)
@@ -953,6 +1133,12 @@ class SettingsDialog(QDialog):
         self.spin_recruit_radius = QSpinBox()
         self.spin_recruit_radius.setRange(1, 10)
         self.spin_recruit_radius.setValue(getattr(self.game, "recruit_radius", DEFAULT_RECRUIT_RADIUS))
+        self.spin_plant_spawn = QSpinBox()
+        self.spin_plant_spawn.setRange(1, 1000)
+        self.spin_plant_spawn.setValue(getattr(self.game, "plant_spawn_interval", DEFAULT_PLANT_SPAWN_INTERVAL))
+        self.spin_plant_lay_food = QSpinBox()
+        self.spin_plant_lay_food.setRange(1, 500)
+        self.spin_plant_lay_food.setValue(getattr(self.game, "plant_lay_food_interval", DEFAULT_PLANT_LAY_FOOD_INTERVAL))
         self.layout.addRow("Grid size", self.spin_grid_size)
         self.layout.addRow("Cycle speed", self.spin_cycle_speed)
         self.layout.addRow("Egg incubate cycles", self.spin_incubate)
@@ -963,6 +1149,8 @@ class SettingsDialog(QDialog):
         self.layout.addRow("Maturity cycles (old age)", self.spin_maturity)
         self.layout.addRow("Feature rarity (higher = rarer)", self.spin_rarity)
         self.layout.addRow("Recruit radius", self.spin_recruit_radius)
+        self.layout.addRow("Plant spawn interval", self.spin_plant_spawn)
+        self.layout.addRow("Plant lay food interval", self.spin_plant_lay_food)
         btn_ok = QPushButton("OK")
         btn_ok.clicked.connect(self.accept)
         self.layout.addRow(btn_ok)
@@ -978,6 +1166,8 @@ class SettingsDialog(QDialog):
         maturity_cycles = self.spin_maturity.value()
         rarity = self.spin_rarity.value() / 100.0
         recruit_radius = self.spin_recruit_radius.value()
+        plant_spawn_interval = self.spin_plant_spawn.value()
+        plant_lay_food_interval = self.spin_plant_lay_food.value()
         grid_size_changed = (self.game.grid_size != grid_size)
         self.game.grid_size = grid_size
         self.game.cell_size = DEFAULT_GAME_AREA_SIZE // grid_size
@@ -989,6 +1179,8 @@ class SettingsDialog(QDialog):
         self.game.maturity_cycles = maturity_cycles
         self.game.rarity = rarity
         self.game.recruit_radius = recruit_radius
+        self.game.plant_spawn_interval = plant_spawn_interval
+        self.game.plant_lay_food_interval = plant_lay_food_interval
         for creature in getattr(self.game, "creatures", []):
             creature.hunger_cycles = hunger_cycles
             creature.turn_interval = turn_interval
@@ -998,9 +1190,12 @@ class SettingsDialog(QDialog):
             creature.rarity = rarity
             creature.game = self.game
             creature.recruit_radius = recruit_radius
+        for plant in getattr(self.game, "plant_cells", []):
+            plant.lay_food_interval = plant_lay_food_interval
+            plant.game = self.game
         if grid_size_changed:
             self.game.reset()
-        return grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles, rarity, recruit_radius
+        return grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles, rarity, recruit_radius, plant_spawn_interval, plant_lay_food_interval
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -1054,6 +1249,7 @@ class MainWindow(QMainWindow):
         legend_grid.addWidget(self._legend_label(COLOR_EYE, "Eye (see food/egg, turn)"), 1, 2)
         legend_grid.addWidget(self._legend_label(COLOR_OLD, "Old (may lose features)"), 2, 0)
         legend_grid.addWidget(self._legend_label(COLOR_NUCLEUS, "Nucleus (first recruiter, only one per group)"), 2, 1)
+        legend_grid.addWidget(self._legend_label(COLOR_PLANT, "Plant cell (random wander, drops food)"), 2, 2)
 
         layout = QVBoxLayout()
         layout.addLayout(top_layout)
@@ -1067,6 +1263,7 @@ class MainWindow(QMainWindow):
             "Game of Predators:\n"
             "Eggs hatch into creatures that eat, grow, and evolve features.\n"
             "Complete creatures lay eggs; old age may cause feature loss.\n"
+            "Plant cells move randomly, periodically drop food, and can be eaten by other creatures.\n"
         )
         self.explanation_label = QLabel(explanation)
         self.explanation_label.setWordWrap(True)
@@ -1130,7 +1327,9 @@ class MainWindow(QMainWindow):
     def show_settings(self):
         dialog = SettingsDialog(self, self.game, self.cycle_speed)
         if dialog.exec():
-            grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles, rarity, recruit_radius = dialog.apply_settings()
+            settings = dialog.apply_settings()
+            grid_size = settings[0]
+            cycle_speed = settings[1]
             self.cycle_speed = cycle_speed
             self.widget.setFixedSize(DEFAULT_GAME_AREA_SIZE, DEFAULT_GAME_AREA_SIZE)
             self.setFixedSize(DEFAULT_GAME_AREA_SIZE + 40, DEFAULT_GAME_AREA_SIZE + 180)
@@ -1186,7 +1385,7 @@ class MainWindow(QMainWindow):
         self.update_coop_prob()
         self.update_max_hunger()
         self.widget.update()
-        if len(self.game.creatures) == 0 and len([egg for egg in self.game.eggs if not egg.hatched]) == 0:
+        if len(self.game.creatures) == 0 and len([egg for egg in self.game.eggs if not egg.hatched]) == 0 and len(self.game.plant_cells) == 0:
             if self.running:
                 self.timer.stop()
                 self.running = False
