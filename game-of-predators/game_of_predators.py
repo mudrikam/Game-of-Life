@@ -38,6 +38,9 @@ DEFAULT_IDLE_LIMIT = 10
 DEFAULT_PLANT_SPAWN_INTERVAL = 300
 DEFAULT_PLANT_LAY_FOOD_INTERVAL = 50
 
+# Tambahkan default interval untuk random egg spawn
+DEFAULT_RANDOM_EGG_SPAWN_INTERVAL = 400
+
 CANIBALITY_THRESHOLD = 0.25
 
 class Egg:
@@ -544,31 +547,46 @@ class Creature:
                 leader.alive = False
         if leader.alive:
             members = [m for m in group if m is not leader]
-            queue = [leader.neutral]
-            visited = set(queue)
-            assign_idx = 0
-            while queue and assign_idx < len(members):
-                cx, cy = queue.pop(0)
-                for dx, dy in COOP_ATTACH_DIRS:
-                    nx, ny = cx + dx, cy + dy
-                    if 0 <= nx < grid_size and 0 <= ny < grid_size and (nx, ny) not in visited:
-                        members[assign_idx].neutral = (nx, ny)
-                        members[assign_idx].cells['neutral'] = [(nx, ny)]
-                        members[assign_idx]._update_attached_cells()
-                        members[assign_idx].steps_since_turn = leader.steps_since_turn
-                        members[assign_idx].direction_idx = leader.direction_idx
-                        members[assign_idx].direction = leader.direction
-                        if members[assign_idx].last_position != (nx, ny):
-                            members[assign_idx].idle_counter = 0
-                            members[assign_idx].last_position = (nx, ny)
-                        else:
-                            members[assign_idx].idle_counter += 1
-                        visited.add((nx, ny))
-                        queue.append((nx, ny))
-                        assign_idx += 1
-                        if assign_idx >= len(members):
+            n_members = len(members)
+            if n_members > 0:
+                cx, cy = leader.neutral
+                radius = 1
+                angle_step = 2 * np.pi / n_members if n_members > 0 else 0
+                used_positions = set([leader.neutral])
+                for idx, member in enumerate(members):
+                    angle = idx * angle_step
+                    # Cari radius yang tidak bertabrakan
+                    found = False
+                    for r in range(1, max(2, grid_size // 2)):
+                        nx = int(round(cx + r * np.cos(angle)))
+                        ny = int(round(cy + r * np.sin(angle)))
+                        if 0 <= nx < grid_size and 0 <= ny < grid_size and (nx, ny) not in used_positions:
+                            member.neutral = (nx, ny)
+                            member.cells['neutral'] = [member.neutral]
+                            member._update_attached_cells()
+                            member.steps_since_turn = leader.steps_since_turn
+                            member.direction_idx = leader.direction_idx
+                            member.direction = leader.direction
+                            if member.last_position != (nx, ny):
+                                member.idle_counter = 0
+                                member.last_position = (nx, ny)
+                            else:
+                                member.idle_counter += 1
+                            used_positions.add((nx, ny))
+                            found = True
                             break
-        self._enforce_group_features(group)
+                    if not found:
+                        # fallback: random nearby
+                        for dx in range(-1, 2):
+                            for dy in range(-1, 2):
+                                nx = cx + dx
+                                ny = cy + dy
+                                if 0 <= nx < grid_size and 0 <= ny < grid_size and (nx, ny) not in used_positions:
+                                    member.neutral = (nx, ny)
+                                    member.cells['neutral'] = [member.neutral]
+                                    member._update_attached_cells()
+                                    used_positions.add((nx, ny))
+                                    break
         for member in group:
             self.recruit_nearby(member, creatures, coop_probability, current_cycle)
             if member.has_weapon:
@@ -839,7 +857,7 @@ class Creature:
         return result
 
 class Game:
-    def __init__(self, grid_size=DEFAULT_GRID_SIZE, incubate_cycles=DEFAULT_INCU_CYCLES, hunger_cycles=DEFAULT_HUNGER_CYCLES, turn_interval=DEFAULT_TURN_INTERVAL, food_radius=DEFAULT_food_radius, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES, rarity=DEFAULT_RARITY, recruit_radius=DEFAULT_RECRUIT_RADIUS, plant_spawn_interval=DEFAULT_PLANT_SPAWN_INTERVAL, plant_lay_food_interval=DEFAULT_PLANT_LAY_FOOD_INTERVAL):
+    def __init__(self, grid_size=DEFAULT_GRID_SIZE, incubate_cycles=DEFAULT_INCU_CYCLES, hunger_cycles=DEFAULT_HUNGER_CYCLES, turn_interval=DEFAULT_TURN_INTERVAL, food_radius=DEFAULT_food_radius, lay_egg_interval=DEFAULT_LAY_EGG_INTERVAL, maturity_cycles=DEFAULT_MATURITY_CYCLES, rarity=DEFAULT_RARITY, recruit_radius=DEFAULT_RECRUIT_RADIUS, plant_spawn_interval=DEFAULT_PLANT_SPAWN_INTERVAL, plant_lay_food_interval=DEFAULT_PLANT_LAY_FOOD_INTERVAL, random_egg_spawn_interval=DEFAULT_RANDOM_EGG_SPAWN_INTERVAL):
         self.grid_size = grid_size
         self.cell_size = DEFAULT_GAME_AREA_SIZE // self.grid_size
         self.incubate_cycles = incubate_cycles
@@ -853,6 +871,7 @@ class Game:
         self.idle_limit = DEFAULT_IDLE_LIMIT
         self.plant_spawn_interval = plant_spawn_interval
         self.plant_lay_food_interval = plant_lay_food_interval
+        self.random_egg_spawn_interval = random_egg_spawn_interval
         self.reset()
         self.max_creature_age = 0
         self.last_coop_probability = 0.0
@@ -867,6 +886,7 @@ class Game:
         self.last_coop_probability = 0.0
         self.plant_cells = []
         self._last_plant_spawn = 0
+        self._last_random_egg_spawn = 0
 
     def add_egg(self, x, y):
         for egg in self.eggs:
@@ -882,6 +902,14 @@ class Game:
         if any(pc.neutral == (x, y) for pc in self.plant_cells):
             return
         self.plant_cells.append(PlantCell(x, y, self.plant_lay_food_interval, self, random_features=True))
+
+    # Fungsi baru untuk spawn egg secara acak
+    def spawn_random_egg(self):
+        empty_cells = [(x, y) for x in range(self.grid_size) for y in range(self.grid_size)
+                       if self.grid[x, y] == 0 and not any(egg.x == x and egg.y == y and not egg.hatched for egg in self.eggs)]
+        if empty_cells:
+            ex, ey = random.choice(empty_cells)
+            self.add_egg(ex, ey)
 
     def update_grid(self):
         self.grid[:] = 0
@@ -937,6 +965,12 @@ class Game:
         else:
             coop_probability = 1.0 - (abundance * 2.0)
         self.last_coop_probability = coop_probability
+
+        # Spawn egg random secara periodik
+        if self.cycle - getattr(self, "_last_random_egg_spawn", 0) >= self.random_egg_spawn_interval:
+            self.spawn_random_egg()
+            self._last_random_egg_spawn = self.cycle
+
         if self.cycle - getattr(self, "_last_plant_spawn", 0) >= self.plant_spawn_interval:
             empty_cells = [(x, y) for x in range(self.grid_size) for y in range(self.grid_size)
                            if self.grid[x, y] == 0 and not any(pc.neutral == (x, y) for pc in self.plant_cells)]
@@ -1180,6 +1214,9 @@ class SettingsDialog(QDialog):
         self.spin_plant_lay_food = QSpinBox()
         self.spin_plant_lay_food.setRange(1, 500)
         self.spin_plant_lay_food.setValue(getattr(self.game, "plant_lay_food_interval", DEFAULT_PLANT_LAY_FOOD_INTERVAL))
+        self.spin_random_egg_spawn = QSpinBox()
+        self.spin_random_egg_spawn.setRange(1, 1000)
+        self.spin_random_egg_spawn.setValue(getattr(self.game, "random_egg_spawn_interval", DEFAULT_RANDOM_EGG_SPAWN_INTERVAL))
         self.layout.addRow("Grid size", self.spin_grid_size)
         self.layout.addRow("Cycle speed", self.spin_cycle_speed)
         self.layout.addRow("Egg incubate cycles", self.spin_incubate)
@@ -1192,6 +1229,7 @@ class SettingsDialog(QDialog):
         self.layout.addRow("Recruit radius", self.spin_recruit_radius)
         self.layout.addRow("Plant spawn interval", self.spin_plant_spawn)
         self.layout.addRow("Plant lay food interval", self.spin_plant_lay_food)
+        self.layout.addRow("Random egg spawn interval", self.spin_random_egg_spawn)
         btn_ok = QPushButton("OK")
         btn_ok.clicked.connect(self.accept)
         self.layout.addRow(btn_ok)
@@ -1209,6 +1247,7 @@ class SettingsDialog(QDialog):
         recruit_radius = self.spin_recruit_radius.value()
         plant_spawn_interval = self.spin_plant_spawn.value()
         plant_lay_food_interval = self.spin_plant_lay_food.value()
+        random_egg_spawn_interval = self.spin_random_egg_spawn.value()
         grid_size_changed = (self.game.grid_size != grid_size)
         self.game.grid_size = grid_size
         self.game.cell_size = DEFAULT_GAME_AREA_SIZE // grid_size
@@ -1222,6 +1261,7 @@ class SettingsDialog(QDialog):
         self.game.recruit_radius = recruit_radius
         self.game.plant_spawn_interval = plant_spawn_interval
         self.game.plant_lay_food_interval = plant_lay_food_interval
+        self.game.random_egg_spawn_interval = random_egg_spawn_interval
         for creature in getattr(self.game, "creatures", []):
             creature.hunger_cycles = hunger_cycles
             creature.turn_interval = turn_interval
@@ -1236,7 +1276,7 @@ class SettingsDialog(QDialog):
             plant.game = self.game
         if grid_size_changed:
             self.game.reset()
-        return grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles, rarity, recruit_radius, plant_spawn_interval, plant_lay_food_interval
+        return grid_size, cycle_speed, incubate_cycles, hunger_cycles, turn_interval, food_radius, lay_egg_interval, maturity_cycles, rarity, recruit_radius, plant_spawn_interval, plant_lay_food_interval, random_egg_spawn_interval
 
 class MainWindow(QMainWindow):
     def __init__(self):
