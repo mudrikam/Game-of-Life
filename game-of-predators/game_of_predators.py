@@ -26,7 +26,7 @@ COLOR_FOOD = QColor(255, 255, 0)
 COLOR_EGG = QColor(200, 200, 200)
 COLOR_OLD = QColor(128, 0, 128)
 COLOR_NUCLEUS = QColor(255, 128, 0)
-COLOR_PLANT = QColor(0, 200, 0)  # Hijau untuk PlantCell
+COLOR_PLANT = QColor(0, 200, 0)
 
 DIRECTIONS = [
     (1,0), (1,1), (0,1), (-1,1), (-1,0), (-1,-1), (0,-1), (1,-1)
@@ -35,8 +35,10 @@ DIRECTIONS = [
 COOP_ATTACH_DIRS = DIRECTIONS
 
 DEFAULT_IDLE_LIMIT = 10
-DEFAULT_PLANT_SPAWN_INTERVAL = 50
-DEFAULT_PLANT_LAY_FOOD_INTERVAL = 20
+DEFAULT_PLANT_SPAWN_INTERVAL = 300
+DEFAULT_PLANT_LAY_FOOD_INTERVAL = 50
+
+CANIBALITY_THRESHOLD = 0.25
 
 class Egg:
     def __init__(self, x, y, incubate_cycles):
@@ -47,7 +49,7 @@ class Egg:
         self.hatched = False
 
 class PlantCell:
-    def __init__(self, x, y, lay_food_interval=DEFAULT_PLANT_LAY_FOOD_INTERVAL, game=None):
+    def __init__(self, x, y, lay_food_interval=DEFAULT_PLANT_LAY_FOOD_INTERVAL, game=None, random_features=True):
         self.neutral = (x, y)
         self.direction_idx = random.randint(0, 7)
         self.direction = DIRECTIONS[self.direction_idx]
@@ -63,6 +65,12 @@ class PlantCell:
         self.last_position = self.neutral
         self.idle_counter = 0
         self.idle_limit = getattr(game, "idle_limit", DEFAULT_IDLE_LIMIT) if game else DEFAULT_IDLE_LIMIT
+        if random_features:
+            if random.random() < 0.5:
+                self.has_leg = True
+            if random.random() < 0.5:
+                self.has_eye = True
+            self._update_attached_cells()
 
     def _update_attached_cells(self):
         tx, ty = self.neutral
@@ -100,10 +108,6 @@ class PlantCell:
                 self.rotate()
                 self.idle_counter += 1
                 continue
-            # PlantCell tidak bisa punya weapon, hanya leg/eye
-            # PlantCell tidak butuh makan, tidak pernah mati karena hunger
-            # PlantCell bisa mati jika dimakan oleh creature lain (handled in Game.step)
-            # PlantCell meletakkan food (egg) sesuai interval
             if current_cycle - self.last_lay_cycle >= self.lay_food_interval:
                 tx, ty = self.neutral
                 self.last_lay_cycle = current_cycle
@@ -274,13 +278,11 @@ class Creature:
                         member.coop_leader = nucleus
                         member.last_coop_cycle = current_cycle
                         member.is_nucleus = (member is nucleus)
-                        # Reset group hunger for all
                         if hasattr(member, "group_hunger"):
                             delattr(member, "group_hunger")
                     self._enforce_group_features(merged)
                     return True
                 return False
-        # Single-to-group or single-to-single
         if self.is_nucleus or other.is_nucleus:
             recruiter = self if self.is_nucleus else other if other.is_nucleus else self if self.is_old else other
         else:
@@ -316,7 +318,6 @@ class Creature:
                 member.coop_leader = nucleus
                 member.last_coop_cycle = current_cycle
                 member.is_nucleus = (member is nucleus)
-                # Reset group hunger for all
                 if hasattr(member, "group_hunger"):
                     delattr(member, "group_hunger")
             self.attach_to_coop_group_outermost(other, merged, creatures)
@@ -499,10 +500,39 @@ class Creature:
                             c.alive = False
             if hasattr(leader, "_pending_coop"):
                 del leader._pending_coop
+            food_count = len(leader.game.food) if leader.game else 0
+            total_living_cells = 0
+            if leader.game:
+                total_living_cells += sum(1 for c in leader.game.creatures if c.alive)
+                total_living_cells += sum(1 for p in getattr(leader.game, "plant_cells", []) if p.alive)
+            total_creature = sum(1 for c in leader.game.creatures if c.alive) if leader.game else 0
+            total_group = 0
+            if leader.game:
+                all_groups = set()
+                for c in leader.game.creatures:
+                    if c.alive and c.coop_group:
+                        all_groups.add(id(c.coop_group))
+                total_group = len(all_groups)
+            # Prevent cannibalism if only 1 creature or only 1 group exists and no other single creatures
+            only_one_group = total_group == 1 and total_creature == len(group)
+            can_eat_egg = food_count >= total_living_cells and total_creature > 1 and not only_one_group
+            group_lay_egg = False
+            if leader.game:
+                if total_creature <= max(2, leader.game.grid_size // 10):
+                    group_lay_egg = True
+            if leader.feature_count() == 3 and current_cycle - leader.last_lay_cycle >= leader.lay_egg_interval:
+                tx, ty = leader.neutral
+                leader.last_lay_cycle = current_cycle
+                return Egg(tx, ty, leader.hunger_cycles)
+            elif group_lay_egg and current_cycle - leader.last_lay_cycle >= leader.lay_egg_interval:
+                tx, ty = leader.neutral
+                leader.last_lay_cycle = current_cycle
+                return Egg(tx, ty, leader.hunger_cycles)
             for egg in eggs:
                 if not egg.hatched and (egg.x, egg.y) == leader.neutral:
-                    self._group_eat_and_grow(group)
-                    egg.hatched = True
+                    if can_eat_egg:
+                        self._group_eat_and_grow(group)
+                        egg.hatched = True
             for idx, (fx, fy) in enumerate(food_list):
                 if (fx, fy) == leader.neutral:
                     self._group_eat_and_grow(group)
@@ -561,10 +591,26 @@ class Creature:
                             c.alive = False
             if hasattr(member, "_pending_coop"):
                 del member._pending_coop
+            food_count = len(member.game.food) if member.game else 0
+            total_living_cells = 0
+            if member.game:
+                total_living_cells += sum(1 for c in member.game.creatures if c.alive)
+                total_living_cells += sum(1 for p in getattr(member.game, "plant_cells", []) if p.alive)
+            total_creature = sum(1 for c in member.game.creatures if c.alive) if member.game else 0
+            total_group = 0
+            if member.game:
+                all_groups = set()
+                for c in member.game.creatures:
+                    if c.alive and c.coop_group:
+                        all_groups.add(id(c.coop_group))
+                total_group = len(all_groups)
+            only_one_group = total_group == 1 and total_creature == len(group)
+            can_eat_egg = food_count >= total_living_cells and total_creature > 1 and not only_one_group
             for egg in eggs:
                 if not egg.hatched and (egg.x, egg.y) == member.neutral:
-                    self._group_eat_and_grow(group)
-                    egg.hatched = True
+                    if can_eat_egg:
+                        self._group_eat_and_grow(group)
+                        egg.hatched = True
             for idx, (fx, fy) in enumerate(food_list):
                 if (fx, fy) == member.neutral:
                     self._group_eat_and_grow(group)
@@ -574,10 +620,6 @@ class Creature:
                 member.alive = False
             if member.idle_counter >= member.idle_limit:
                 member.alive = False
-        if leader.feature_count() == 3 and current_cycle - leader.last_lay_cycle >= leader.lay_egg_interval:
-            tx, ty = leader.neutral
-            leader.last_lay_cycle = current_cycle
-            return Egg(tx, ty, leader.hunger_cycles)
         return None
 
     def _group_eat_and_grow(self, group):
@@ -697,10 +739,17 @@ class Creature:
                             c.alive = False
             if hasattr(self, "_pending_coop"):
                 del self._pending_coop
+            food_count = len(self.game.food) if self.game else 0
+            total_living_cells = 0
+            if self.game:
+                total_living_cells += sum(1 for c in self.game.creatures if c.alive)
+                total_living_cells += sum(1 for p in getattr(self.game, "plant_cells", []) if p.alive)
+            can_eat_egg = food_count >= total_living_cells
             for egg in eggs:
                 if not egg.hatched and (egg.x, egg.y) == self.neutral:
-                    self.eat_and_grow()
-                    egg.hatched = True
+                    if can_eat_egg:
+                        self.eat_and_grow()
+                        egg.hatched = True
             for idx, (fx, fy) in enumerate(food_list):
                 if (fx, fy) == self.neutral:
                     self.eat_and_grow()
@@ -717,7 +766,6 @@ class Creature:
         return None
 
     def recruit_nearby(self, self_creature, creatures, coop_probability, current_cycle):
-        # Try to recruit any other group or single nearby
         for other in creatures:
             if other is self_creature:
                 continue
@@ -833,7 +881,7 @@ class Game:
     def add_plant_cell(self, x, y):
         if any(pc.neutral == (x, y) for pc in self.plant_cells):
             return
-        self.plant_cells.append(PlantCell(x, y, self.plant_lay_food_interval, self))
+        self.plant_cells.append(PlantCell(x, y, self.plant_lay_food_interval, self, random_features=True))
 
     def update_grid(self):
         self.grid[:] = 0
@@ -889,7 +937,6 @@ class Game:
         else:
             coop_probability = 1.0 - (abundance * 2.0)
         self.last_coop_probability = coop_probability
-        # PlantCell random spawn
         if self.cycle - getattr(self, "_last_plant_spawn", 0) >= self.plant_spawn_interval:
             empty_cells = [(x, y) for x in range(self.grid_size) for y in range(self.grid_size)
                            if self.grid[x, y] == 0 and not any(pc.neutral == (x, y) for pc in self.plant_cells)]
@@ -897,11 +944,9 @@ class Game:
                 px, py = random.choice(empty_cells)
                 self.add_plant_cell(px, py)
             self._last_plant_spawn = self.cycle
-        # Move PlantCells
         for plant in self.plant_cells:
             if plant.alive:
                 plant.move(self.grid_size, self.cycle, self.food)
-        # Creature logic
         for egg in self.eggs:
             if not egg.hatched:
                 if egg.born_cycle is None:
@@ -927,7 +972,6 @@ class Game:
                 creature.hunger -= 1
                 if creature.hunger <= 0:
                     creature.alive = False
-        # PlantCell dimakan oleh creature
         for creature in self.creatures:
             if creature.alive:
                 for plant in self.plant_cells:
@@ -935,7 +979,6 @@ class Game:
                         plant.alive = False
                         creature.eat_and_grow()
                         self.food.append(plant.neutral)
-        # PlantCell juga bisa dimakan oleh creature yang punya leg/eye
         for creature in self.creatures:
             if creature.alive:
                 for plant in self.plant_cells:
@@ -945,13 +988,11 @@ class Game:
                                 plant.alive = False
                                 creature.eat_and_grow()
                                 self.food.append(plant.neutral)
-        # Creature mati jadi food
         for creature in self.creatures:
             if not creature.alive:
                 for cell in creature.all_cells():
                     if 0 <= cell[0] < self.grid_size and 0 <= cell[1] < self.grid_size:
                         self.food.append(cell)
-        # PlantCell mati jadi food
         for plant in self.plant_cells:
             if not plant.alive:
                 for cell in plant.all_cells():
@@ -1263,7 +1304,6 @@ class MainWindow(QMainWindow):
             "Game of Predators:\n"
             "Eggs hatch into creatures that eat, grow, and evolve features.\n"
             "Complete creatures lay eggs; old age may cause feature loss.\n"
-            "Plant cells move randomly, periodically drop food, and can be eaten by other creatures.\n"
         )
         self.explanation_label = QLabel(explanation)
         self.explanation_label.setWordWrap(True)
